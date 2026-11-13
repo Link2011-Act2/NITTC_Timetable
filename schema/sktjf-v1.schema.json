@@ -4,7 +4,7 @@
   "title": "SKTJF version 1 class timetable",
   "type": "object",
   "additionalProperties": false,
-  "required": ["format", "schemaVersion", "schoolId", "academicYear", "term", "classId", "revision", "sources", "periods", "lessons", "calendar"],
+  "required": ["format", "schemaVersion", "schoolId", "academicYear", "term", "classId", "revision", "sources", "periods", "slotCoverage", "lessons", "calendar"],
   "properties": {
     "format": {"const": "SKTJF"},
     "schemaVersion": {"const": 1},
@@ -15,6 +15,7 @@
     "revision": {"type": "string", "pattern": "^[0-9]{4}\\.[SF]\\.(0|[1-9][0-9]*)$"},
     "sources": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/source"}},
     "periods": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/period"}},
+    "slotCoverage": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/slot"}},
     "lessons": {"type": "array", "items": {"$ref": "#/$defs/lesson"}},
     "calendar": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/day"}}
   },
@@ -24,6 +25,7 @@
     "reference": {"type": "object", "additionalProperties": false, "required": ["sourceId", "page"], "properties": {"sourceId": {"$ref": "#/$defs/id"}, "page": {"type": "integer", "minimum": 1}, "note": {"type": "string"}}},
     "period": {"type": "object", "additionalProperties": false, "required": ["number", "start", "end"], "properties": {"number": {"type": "integer", "minimum": 1, "maximum": 12}, "start": {"type": "string", "pattern": "^([01][0-9]|2[0-3]):[0-5][0-9]$"}, "end": {"type": "string", "pattern": "^([01][0-9]|2[0-3]):[0-5][0-9]$"}}},
     "conditions": {"type": "object", "additionalProperties": false, "required": ["all", "none"], "properties": {"all": {"type": "array", "uniqueItems": true, "items": {"$ref": "#/$defs/id"}}, "none": {"type": "array", "uniqueItems": true, "items": {"$ref": "#/$defs/id"}}}},
+    "slot": {"type": "object", "additionalProperties": false, "required": ["dayOfWeek", "period", "state", "sources"], "properties": {"dayOfWeek": {"type": "integer", "minimum": 1, "maximum": 7}, "period": {"type": "integer", "minimum": 1, "maximum": 12}, "state": {"enum": ["PRESENT", "EMPTY", "EXCLUDED"]}, "containsExcluded": {"type": "boolean"}, "sources": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/reference"}}}},
     "lesson": {"type": "object", "additionalProperties": false, "required": ["id", "dayOfWeek", "period", "cycle", "subject", "teachers", "rooms", "conditions", "kind", "sources"], "properties": {"id": {"$ref": "#/$defs/id"}, "dayOfWeek": {"type": "integer", "minimum": 1, "maximum": 7}, "period": {"type": "integer", "minimum": 1, "maximum": 12}, "cycle": {"enum": ["WEEKLY", "A", "B"]}, "subject": {"type": "string", "minLength": 1}, "teachers": {"type": "array", "items": {"type": "string", "minLength": 1}}, "rooms": {"type": "array", "items": {"type": "string", "minLength": 1}}, "conditions": {"$ref": "#/$defs/conditions"}, "kind": {"enum": ["NORMAL", "MAKEUP", "EXTENSION"]}, "remote": {"type": "boolean"}, "sources": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/reference"}}}},
     "day": {"type": "object", "additionalProperties": false, "required": ["date", "dayType", "sources"], "properties": {"date": {"type": "string", "format": "date"}, "dayType": {"enum": ["A", "B", "HOLIDAY", null]}, "overrideDayOfWeek": {"type": ["integer", "null"], "minimum": 1, "maximum": 7}, "overrideDayType": {"enum": ["A", "B", null]}, "event": {"type": ["object", "null"], "additionalProperties": false, "required": ["name"], "properties": {"name": {"type": "string", "minLength": 1}, "kind": {"enum": ["MIDTERM", "FINAL", "EXCURSION", "EVENT", "EXAM_RETURN", "OTHER"]}}}, "sources": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/reference"}}}}
   }
