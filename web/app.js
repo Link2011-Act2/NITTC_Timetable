@@ -1,128 +1,69 @@
 import * as pdfjs from '/node_modules/pdfjs-dist/build/pdf.mjs';
-import { History, emptyEntry, isProjectShape, mergeCells, newCell, projectIssues, splitCell, validateRect } from '/web/model.js';
-
-pdfjs.GlobalWorkerOptions.workerSrc = '/node_modules/pdfjs-dist/build/pdf.worker.mjs';
-const $ = id => document.getElementById(id);
-let history = new History({ version: 1, pdf: null, pdfName: '', cells: [] });
-let pdf = null, page = 1, zoom = 1, selected = [], drawing = false, start = null, dirty = false, renderToken = 0;
-const current = () => history.current;
-const say = text => { $('status').textContent = text; };
-const cells = () => current().cells.filter(c => c.page === page);
-const selectedCells = () => current().cells.filter(c => selected.includes(c.id));
-const changed = (fn, refreshEditor = true) => { history.change(fn); dirty = true; update(refreshEditor); };
-const b64 = bytes => { let s = ''; for (let i = 0; i < bytes.length; i += 32768) s += String.fromCharCode(...bytes.subarray(i, i + 32768)); return btoa(s); };
-const from64 = str => Uint8Array.from(atob(str), c => c.charCodeAt(0));
-
-async function loadPdf() {
-  if (!current().pdf) return;
-  pdf = await pdfjs.getDocument({ data: from64(current().pdf) }).promise;
-  page = Math.min(Math.max(page, 1), pdf.numPages);
-  await renderPdf();
+import { isProjectShape } from './model.js';
+import { classIds, dateAdd, emptyDay, emptyLesson, emptyProject, History, lessonAt, migrateV1, mondayOf, putLesson, validProject } from './table-model.js';
+import { extractPage } from './extract.js';
+pdfjs.GlobalWorkerOptions.workerSrc='/node_modules/pdfjs-dist/build/pdf.worker.mjs';
+const $=id=>document.getElementById(id), weekday=['月','火','水','木','金'];
+let history=new History(emptyProject(null,'',2026,'S')), pdf=null, page=1, zoom=1, tableZoom=1, view='lesson', selection=null, dirty=false, renderToken=0;
+const project=()=>history.current, say=t=>{$('status').textContent=t;};
+const to64=bytes=>{let s='';for(let i=0;i<bytes.length;i+=32768)s+=String.fromCharCode(...bytes.subarray(i,i+32768));return btoa(s);};
+const from64=s=>Uint8Array.from(atob(s),c=>c.charCodeAt(0));
+for(const value of classIds){const o=document.createElement('option');o.value=value;o.textContent=value;$('class-id').append(o);}
+function change(fn, editor=true){history.change(fn);dirty=true;renderTable();updateControls();if(editor)renderEditor();else{const box=$('editor').querySelector('input[type=checkbox]');if(box)box.checked=false;}}
+function updateControls(){
+  $('pdf-name').textContent=project().pdfName||'PDFを開いてください';$('page-label').textContent=pdf?`${page} / ${pdf.numPages}`:'—';$('zoom-label').textContent=`${Math.round(zoom*100)}%`;
+  $('prev').disabled=!pdf||page<=1;$('next').disabled=!pdf||page>=pdf.numPages;$('undo').disabled=!history.undoStack.length;$('redo').disabled=!history.redoStack.length;
+  $('lesson-tab').setAttribute('aria-pressed',String(view==='lesson'));$('calendar-tab').setAttribute('aria-pressed',String(view==='calendar'));
+  for(const id of ['scope-label','week-label','add-week'])$(id).hidden=view!=='calendar';
+  const pending=project().lessons.filter(c=>!c.reviewed).length+project().calendar.filter(c=>!c.reviewed).length;
+  $('summary').textContent=`未確認 ${pending}件${project().legacyCells.length?` · 旧作業 ${project().legacyCells.length}件`:''}`;
+  $('next-issue').disabled=!pending;
+  $('scopes').replaceChildren(...[...new Set(project().calendar.map(c=>c.scope))].map(scope=>{const option=document.createElement('option');option.value=scope;return option;}));
+  const legacy=$('legacy');legacy.hidden=!project().legacyCells.length;legacy.textContent=project().legacyCells.length?'旧形式のセルは配置先を自動判定できないため、作業ファイルに保持しています。内容を確認して表へ入力してください。\n'+project().legacyCells.map(c=>JSON.stringify(c.entries)).join('\n'):'';
 }
-async function renderPdf() {
-  if (!pdf) return;
-  const token = ++renderToken;
-  const pdfPage = await pdf.getPage(page);
-  const viewport = pdfPage.getViewport({ scale: zoom });
-  // Render into an offscreen canvas so overlapping zoom operations cannot corrupt it.
-  const canvas = document.createElement('canvas');
-  canvas.width = Math.ceil(viewport.width); canvas.height = Math.ceil(viewport.height);
-  await pdfPage.render({ canvasContext: canvas.getContext('2d'), viewport }).promise;
-  if (token !== renderToken) return;
-  const visible = $('pdf'); visible.width = canvas.width; visible.height = canvas.height;
-  visible.getContext('2d').drawImage(canvas, 0, 0);
-  $('paper').style.width = `${canvas.width}px`; $('paper').style.height = `${canvas.height}px`;
-  update();
+async function renderPdf(){if(!pdf)return;const token=++renderToken,p=await pdf.getPage(page),viewport=p.getViewport({scale:zoom}),buffer=document.createElement('canvas');buffer.width=Math.ceil(viewport.width);buffer.height=Math.ceil(viewport.height);await p.render({canvasContext:buffer.getContext('2d'),viewport}).promise;if(token!==renderToken)return;const c=$('pdf');c.width=buffer.width;c.height=buffer.height;c.getContext('2d').drawImage(buffer,0,0);updateControls();}
+function getLesson(day,period){return lessonAt(project(),$('term').value,$('class-id').value,day,period);}
+function getDay(date){return project().calendar.find(c=>c.date===date&&c.scope===$('scope').value);}
+function sameSelection(key){return selection&&JSON.stringify(selection)===JSON.stringify(key);}
+function createSlot(key,cell,text){const b=document.createElement('button');b.type='button';b.className=`slot${cell&&!cell.reviewed?' pending':''}${sameSelection(key)?' selected':''}`;b.textContent=text||'＋';b.setAttribute('aria-label',`${key.kind==='lesson'?`${weekday[key.day-1]}曜 ${key.period}時限` : key.date} ${text||'空欄'}${cell&&!cell.reviewed?' 未確認':''}`);b.onclick=()=>{selection=key;renderTable();renderEditor();};b.dataset.key=JSON.stringify(key);return b;}
+function renderTable(){
+  const root=$('table-wrap');root.replaceChildren();const table=document.createElement('table');table.className=`table ${view==='calendar'?'calendar':''}`;const head=document.createElement('tr');for(const name of [view==='lesson'?'時限':'週',...weekday]){const th=document.createElement('th');th.textContent=name;head.append(th);}table.append(head);
+  if(view==='lesson')for(let period=1;period<=4;period++){const tr=document.createElement('tr'),th=document.createElement('th');th.textContent=String(period);tr.append(th);for(let day=1;day<=5;day++){const td=document.createElement('td'),c=getLesson(day,period);td.append(createSlot({kind:'lesson',day,period},c,c?.entries.map(e=>[e.cycle,e.subject,e.teacher,e.room].filter(Boolean).join(' ')).join('\n')));tr.append(td);}table.append(tr);}
+  else{const weeks=[...new Set(project().calendar.filter(c=>c.scope===$('scope').value).map(c=>mondayOf(c.date)))].sort();for(const week of weeks){const tr=document.createElement('tr'),th=document.createElement('th');th.textContent=week.slice(5);tr.append(th);for(let i=0;i<5;i++){const date=dateAdd(week,i),c=getDay(date),td=document.createElement('td');td.append(createSlot({kind:'calendar',date},c,[date.slice(5),c?.dayType,c?.lessonDay?`(${weekday[Number(c.lessonDay)-1]||c.lessonDay})`:null,c?.label].filter(Boolean).join(' ')));tr.append(td);}table.append(tr);}if(!weeks.length){const p=document.createElement('p');p.className='empty';p.textContent='週を追加して入力できます';root.append(p);}}
+  root.append(table);document.querySelector('.data-scroll').style.setProperty('--scale',tableZoom);
 }
-function update(refreshEditor = true) {
-  $('page-label').textContent = pdf ? `${page} / ${pdf.numPages}` : '—';
-  $('zoom-label').textContent = `${Math.round(zoom * 100)}%`;
-  $('prev').disabled = !pdf || page <= 1; $('next').disabled = !pdf || page >= pdf.numPages;
-  $('undo').disabled = !history.undoStack.length; $('redo').disabled = !history.redoStack.length;
-  $('draw').setAttribute('aria-pressed', String(drawing));
-  $('overlay').classList.toggle('drawing', drawing);
-  $('hint').textContent = !pdf ? 'PDFを開いてください' : drawing ? 'PDF上でドラッグしてセルの範囲を指定します' : 'セルを選択して内容を確認します';
-  const issues = current().cells.filter(c => !c.reviewed || c.issues.length);
-  $('summary').textContent = `${current().pdfName || 'PDF未選択'} · ${current().cells.length}セル · 未確認・要確認 ${issues.length}件`;
-  $('next-issue').disabled = !issues.length;
-  $('overlay').replaceChildren();
-  for (const cell of cells()) {
-    const el = document.createElement('button'); el.type = 'button';
-    el.className = `cell${cell.reviewed && !cell.issues.length ? ' reviewed' : ''}${selected.includes(cell.id) ? ' selected' : ''}`;
-    const [x1, y1, x2, y2] = cell.rect;
-    Object.assign(el.style, { left: `${x1 * 100}%`, top: `${y1 * 100}%`, width: `${(x2-x1)*100}%`, height: `${(y2-y1)*100}%` });
-    const title = cell.entries.map(e => e.subject || e.label || e.date).filter(Boolean).join(' / ') || '未入力';
-    el.setAttribute('aria-label', `${title}、${cell.reviewed ? '確認済み' : '未確認'}`);
-    const label = document.createElement('span'); label.textContent = title; el.append(label);
-    el.addEventListener('click', event => { event.stopPropagation(); if (drawing) return; selected = event.ctrlKey || event.metaKey ? selected.includes(cell.id) ? selected.filter(id => id !== cell.id) : [...selected, cell.id] : [cell.id]; update(); });
-    $('overlay').append(el);
+function field(container,label,value,onChange){const wrap=document.createElement('label');wrap.className='field';wrap.textContent=label;const input=document.createElement('input');input.value=value||'';input.oninput=()=>onChange(input.value);wrap.append(input);container.append(wrap);}
+function renderEditor(){
+  const root=$('editor');root.replaceChildren();if(!selection){root.textContent='表のセルを選択してください';root.className='empty';return;}root.className='';const title=document.createElement('h2');title.textContent=selection.kind==='lesson'?`${$('class-id').value} · ${weekday[selection.day-1]}曜 ${selection.period}時限`:selection.date;root.append(title);
+  if(selection.kind==='lesson'){
+    const saved=getLesson(selection.day,selection.period),cell=saved||{term:$('term').value,classId:$('class-id').value,day:selection.day,period:selection.period,entries:[emptyLesson()],reviewed:false,raw:''};
+    const set=(index,key,value)=>change(p=>{const c=structuredClone(getLesson(selection.day,selection.period)||cell);c.entries[index][key]=value;c.reviewed=false;putLesson(p,c);},false);
+    cell.entries.forEach((entry,index)=>{const box=document.createElement('div');box.className='entry';const h=document.createElement('h3');h.textContent=`授業 ${index+1}`;box.append(h);const grid=document.createElement('div');grid.className='fields';for(const [key,label] of [['subject','科目名'],['teacher','担当教員'],['room','教室'],['cycle','A/B'],['attributes','対象学生の条件'],['special','特殊授業種別']])field(grid,label,entry[key],v=>set(index,key,v));box.append(grid);if(cell.entries.length>1){const del=document.createElement('button');del.textContent='この授業を削除';del.onclick=()=>change(p=>{const c=structuredClone(getLesson(selection.day,selection.period)||cell);c.entries.splice(index,1);c.reviewed=false;putLesson(p,c);});box.append(del);}root.append(box);});
+    const add=document.createElement('button');add.textContent='授業を追加';add.onclick=()=>change(p=>{const c=structuredClone(getLesson(selection.day,selection.period)||cell);c.entries.push(emptyLesson());c.reviewed=false;putLesson(p,c);});root.append(add);
+    const del=document.createElement('button');del.textContent='この枠を削除';del.onclick=()=>change(p=>putLesson(p,{...cell,entries:[]}));root.append(del);
+    reviewControl(root,saved?.reviewed||false,checked=>change(p=>{const c=structuredClone(getLesson(selection.day,selection.period)||cell);c.reviewed=checked;putLesson(p,c);}));
+  }else{
+    const saved=getDay(selection.date),cell=saved||{...emptyDay(selection.date),scope:$('scope').value};const grid=document.createElement('div');grid.className='fields';
+    for(const [key,label] of [['dayType','A/B・休日'],['lessonDay','振替先の曜日（1〜5）'],['lessonType','振替先のA/B'],['label','行事名']])field(grid,label,cell[key],v=>change(p=>{const c=structuredClone(getDay(selection.date)||cell);c[key]=v;c.reviewed=false;p.calendar=p.calendar.filter(x=>!(x.scope===c.scope&&x.date===c.date));p.calendar.push(c);},false));root.append(grid);
+    const del=document.createElement('button');del.textContent='この日を削除';del.onclick=()=>change(p=>{p.calendar=p.calendar.filter(c=>!(c.scope===cell.scope&&c.date===cell.date));});root.append(del);reviewControl(root,saved?.reviewed||false,checked=>change(p=>{const c=structuredClone(getDay(selection.date)||cell);c.reviewed=checked;p.calendar=p.calendar.filter(x=>!(x.scope===c.scope&&x.date===c.date));p.calendar.push(c);}));
   }
-  if (refreshEditor) renderEditor();
-  else { const checkbox=$('editor').querySelector('.review'); if (checkbox) checkbox.checked=false; }
 }
-const lessonFields = [['subject','科目名'],['teacher','担当教員'],['room','教室'],['day','曜日'],['period','時限'],['classId','対象クラス'],['cycle','A/B'],['attributes','対象学生の条件'],['special','特殊授業種別']];
-const calendarFields = [['date','日付'],['dayType','A/B・休日'],['lessonDay','振替先の曜日'],['lessonType','振替先のA/B'],['label','行事名']];
-function renderEditor() {
-  const host = $('editor'); host.replaceChildren();
-  const chosen = selectedCells();
-  for (const id of ['split-v','split-h','delete']) $(id).disabled = chosen.length !== 1;
-  $('merge').disabled = chosen.length < 2;
-  if (chosen.length !== 1) { const p = document.createElement('p'); p.className='empty'; p.textContent = chosen.length ? `${chosen.length}セルを選択中` : 'セルを選択してください'; host.append(p); return; }
-  const cell = chosen[0];
-  const info = document.createElement('p'); info.className='muted'; info.textContent = `${cell.page}ページ · ${cell.kind === 'lesson' ? '授業' : '日付'} · ${cell.entries.length}件`; host.append(info);
-  const extract = document.createElement('button'); extract.textContent='範囲の文字を抽出'; extract.onclick=() => extractText(cell.id); host.append(extract);
-  cell.entries.forEach((entry,index) => {
-    const section=document.createElement('div'); section.className='entry';
-    const heading=document.createElement('h2'); heading.textContent=`内容 ${index+1}`; section.append(heading);
-    const grid=document.createElement('div'); grid.className='fields';
-    for (const [key,label] of cell.kind === 'lesson' ? lessonFields : calendarFields) {
-      const wrapper=document.createElement('label'); wrapper.className=`field${['subject','attributes','label'].includes(key)?' wide':''}`; wrapper.textContent=label;
-      const input=document.createElement('input'); input.value=entry[key] || ''; input.addEventListener('change', () => changed(p => { const c=p.cells.find(c=>c.id===cell.id); c.entries[index][key]=input.value; c.reviewed=false; }, false));
-      wrapper.append(input); grid.append(wrapper);
-    }
-    section.append(grid);
-    if (cell.entries.length > 1) { const remove=document.createElement('button'); remove.textContent='この内容を削除'; remove.onclick=()=>changed(p=>{ const c=p.cells.find(c=>c.id===cell.id); c.entries.splice(index,1); c.reviewed=false; }); section.append(remove); }
-    host.append(section);
-  });
-  const add=document.createElement('button'); add.textContent='内容を追加'; add.onclick=()=>changed(p=>{ const c=p.cells.find(c=>c.id===cell.id); c.entries.push(emptyEntry(c.kind)); c.reviewed=false; }); host.append(add);
-  const issueLabel=document.createElement('label'); issueLabel.className='field wide'; issueLabel.textContent='確認が必要な点（1行ずつ）';
-  const issueInput=document.createElement('textarea'); issueInput.value=cell.issues.join('\n'); issueInput.addEventListener('change',()=>changed(p=>{ const c=p.cells.find(c=>c.id===cell.id); c.issues=issueInput.value.split('\n').map(s=>s.trim()).filter(Boolean); c.reviewed=false; }, false)); issueLabel.append(issueInput); host.append(issueLabel);
-  const reviewLabel=document.createElement('label'); reviewLabel.className='row'; const review=document.createElement('input'); review.type='checkbox'; review.className='review'; review.checked=cell.reviewed; review.addEventListener('change',()=>changed(p=>{p.cells.find(c=>c.id===cell.id).reviewed=review.checked;})); reviewLabel.append(review,document.createTextNode('確認済み')); host.append(reviewLabel);
-}
-async function extractText(id) {
-  const cell=current().cells.find(c=>c.id===id); if (!cell || !pdf) return;
-  const targetPage=await pdf.getPage(cell.page), viewport=targetPage.getViewport({scale:1}), content=await targetPage.getTextContent();
-  const text=content.items.filter(item=>{
-    if (!item.str || !item.transform) return false;
-    const transform=pdfjs.Util.transform(viewport.transform,item.transform); const x=transform[4]/viewport.width, y=transform[5]/viewport.height;
-    return x>=cell.rect[0] && x<=cell.rect[2] && y>=cell.rect[1] && y<=cell.rect[3];
-  }).map(item=>item.str).join(' ').trim();
-  changed(p=>{const c=p.cells.find(c=>c.id===id); const key=c.kind==='lesson'?'subject':'label'; c.entries[0][key]=text; c.reviewed=false; c.issues=[...new Set([...c.issues,'抽出した文字と範囲を確認'])];});
-  say(text ? '抽出結果を確認してください' : '範囲内に文字が見つかりませんでした');
-}
-function point(event) { const r=$('overlay').getBoundingClientRect(); return [Math.max(0,Math.min(1,(event.clientX-r.left)/r.width)),Math.max(0,Math.min(1,(event.clientY-r.top)/r.height))]; }
-$('overlay').addEventListener('pointerdown',e=>{ if(!drawing||!pdf||e.button!==0)return; start=point(e); $('overlay').setPointerCapture(e.pointerId); const draft=document.createElement('div'); draft.className='draft'; draft.id='draft'; $('overlay').append(draft); });
-$('overlay').addEventListener('pointermove',e=>{ if(!start)return; const end=point(e),draft=$('draft'); if(!draft)return; Object.assign(draft.style,{left:`${Math.min(start[0],end[0])*100}%`,top:`${Math.min(start[1],end[1])*100}%`,width:`${Math.abs(start[0]-end[0])*100}%`,height:`${Math.abs(start[1]-end[1])*100}%`}); });
-$('overlay').addEventListener('pointerup',e=>{ if(!start)return; const end=point(e),rect=[Math.min(start[0],end[0]),Math.min(start[1],end[1]),Math.max(start[0],end[0]),Math.max(start[1],end[1])]; start=null; $('draft')?.remove(); if(!validateRect(rect)||rect[2]-rect[0]<.003||rect[3]-rect[1]<.003)return; const cell=newCell(page,rect,$('kind').value); selected=[cell.id]; drawing=false; changed(p=>p.cells.push(cell)); });
-$('overlay').addEventListener('pointercancel',()=>{start=null; $('draft')?.remove();});
-$('draw').onclick=()=>{drawing=!drawing; update();};
-$('prev').onclick=()=>{page--;selected=[];renderPdf().catch(error=>say(error.message));};
-$('next').onclick=()=>{page++;selected=[];renderPdf().catch(error=>say(error.message));};
-$('zoom-in').onclick=()=>{zoom=Math.min(3,zoom+.25);renderPdf().catch(error=>say(error.message));};
-$('zoom-out').onclick=()=>{zoom=Math.max(.5,zoom-.25);renderPdf().catch(error=>say(error.message));};
-$('undo').onclick=()=>{if(history.undo()){dirty=true;selected=[];update();}};
-$('redo').onclick=()=>{if(history.redo()){dirty=true;selected=[];update();}};
-for (const [id,direction] of [['split-v','vertical'],['split-h','horizontal']]) $(id).onclick=()=>{const cell=selectedCells()[0]; if(!cell)return; const parts=splitCell(cell,direction); selected=parts.map(c=>c.id); changed(p=>{p.cells.splice(p.cells.findIndex(c=>c.id===cell.id),1,...parts);});};
-$('merge').onclick=()=>{try{const chosen=selectedCells(),merged=mergeCells(chosen); selected=[merged.id]; changed(p=>{p.cells=p.cells.filter(c=>!chosen.some(x=>x.id===c.id));p.cells.push(merged);});}catch(error){say(error.message);}};
-$('delete').onclick=()=>{const id=selected[0]; if(!id)return; selected=[];changed(p=>{p.cells=p.cells.filter(c=>c.id!==id);});};
-$('next-issue').onclick=()=>{const list=current().cells.filter(c=>!c.reviewed||c.issues.length),index=list.findIndex(c=>c.id===selected[0]),cell=list[(index+1)%list.length];if(!cell)return; selected=[cell.id];if(page!==cell.page){page=cell.page;renderPdf().catch(error=>say(error.message));}else update();};
-const fileText = file => file.text();
-function canReplace() { return !dirty || confirm('保存していない変更があります。別のファイルを開きますか？'); }
-$('pdf-input').onchange=async e=>{const file=e.target.files[0];e.target.value='';if(!file||!canReplace())return;try{const bytes=new Uint8Array(await file.arrayBuffer());const doc=await pdfjs.getDocument({data:bytes.slice()}).promise;history=new History({version:1,pdf:b64(bytes),pdfName:file.name,cells:[]});pdf=doc;page=1;selected=[];dirty=true;await renderPdf();say('');}catch{say('PDFを開けませんでした');}};
-$('project-input').onchange=async e=>{const file=e.target.files[0];e.target.value='';if(!file||!canReplace())return;try{const project=JSON.parse(await fileText(file));if(!isProjectShape(project))throw Error();const doc=await pdfjs.getDocument({data:from64(project.pdf)}).promise;if(project.cells.some(c=>c.page>doc.numPages))throw Error();history=new History(project);pdf=doc;page=1;selected=[];dirty=false;await renderPdf();say('作業を開きました');}catch{say('作業ファイルを開けませんでした');}};
-$('save').onclick=()=>{if(!current().pdf){say('PDFを開いてください');return;}const blob=new Blob([JSON.stringify(current())],{type:'application/json'}),url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;a.download=`${current().pdfName.replace(/\.pdf$/i,'')}.sktjf-project.json`;a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);dirty=false;say(`作業ファイルを保存しました。未解決項目: ${projectIssues(current()).length}件`);};
-window.addEventListener('beforeunload',event=>{if(dirty){event.preventDefault();event.returnValue='';}});
-window.addEventListener('copy',event=>{if(event.target.matches('input,textarea,select')||selected.length!==1)return;const cell=selectedCells()[0];if(!cell)return;event.clipboardData.setData('text/plain',JSON.stringify({format:'sktjf-cell-entries',kind:cell.kind,entries:cell.entries}));event.preventDefault();say('内容をコピーしました');});
-window.addEventListener('paste',event=>{if(event.target.matches('input,textarea,select')||selected.length!==1)return;const cell=selectedCells()[0],text=event.clipboardData.getData('text/plain');if(!cell||!text)return;let entries;try{const copied=JSON.parse(text);if(copied.format!=='sktjf-cell-entries'||copied.kind!==cell.kind||!Array.isArray(copied.entries)||!copied.entries.length||!copied.entries.every(e=>e&&typeof e==='object'&&!Array.isArray(e)&&Object.values(e).every(v=>typeof v==='string')))throw Error();entries=copied.entries;}catch{entries=[{...emptyEntry(cell.kind),[cell.kind==='lesson'?'subject':'label']:text}];}event.preventDefault();changed(p=>{const c=p.cells.find(c=>c.id===cell.id);c.entries=structuredClone(entries);c.reviewed=false;});say('内容を貼り付けました');});
-window.addEventListener('keydown',event=>{if(event.target.matches('input,textarea,select'))return;const command=event.ctrlKey||event.metaKey;if(command&&event.key.toLowerCase()==='z'){event.preventDefault();(event.shiftKey?$('redo'):$('undo')).click();}else if(command&&event.key.toLowerCase()==='y'){event.preventDefault();$('redo').click();}else if(['ArrowRight','ArrowDown','ArrowLeft','ArrowUp'].includes(event.key)&&cells().length){event.preventDefault();const list=cells(),i=list.findIndex(c=>c.id===selected[0]),step=['ArrowRight','ArrowDown'].includes(event.key)?1:-1;selected=[list[(i+step+list.length)%list.length].id];update();}});
-update();
+function reviewControl(root,checked,handler){const label=document.createElement('label');label.className='row';const box=document.createElement('input');box.type='checkbox';box.checked=checked;box.onchange=()=>handler(box.checked);label.append(box,document.createTextNode('確認済み'));root.append(label);}
+function refresh(){renderTable();renderEditor();updateControls();}
+$('lesson-tab').onclick=()=>{view='lesson';selection=null;refresh();};$('calendar-tab').onclick=()=>{view='calendar';selection=null;refresh();};
+for(const id of ['term','class-id','scope'])$(id).onchange=()=>{selection=null;refresh();};
+$('year').onchange=()=>{const year=Number($('year').value);if(year>=2000&&year<=2100)change(p=>{p.year=year;});};
+$('add-week').onclick=()=>{if(!$('week').value)return;const week=mondayOf($('week').value),scope=$('scope').value;change(p=>{for(let i=0;i<5;i++){const date=dateAdd(week,i);if(!p.calendar.some(c=>c.date===date&&c.scope===scope))p.calendar.push({...emptyDay(date),scope});}});};
+$('prev').onclick=()=>{page--;renderPdf().catch(e=>say(e.message));};$('next').onclick=()=>{page++;renderPdf().catch(e=>say(e.message));};$('zoom-in').onclick=()=>{zoom=Math.min(3,zoom+.25);renderPdf().catch(e=>say(e.message));};$('zoom-out').onclick=()=>{zoom=Math.max(.5,zoom-.25);renderPdf().catch(e=>say(e.message));};
+$('table-zoom-in').onclick=()=>{tableZoom=Math.min(1.6,tableZoom+.1);renderTable();};$('table-zoom-out').onclick=()=>{tableZoom=Math.max(.7,tableZoom-.1);renderTable();};
+$('undo').onclick=()=>{if(history.undo()){dirty=true;selection=null;refresh();}};$('redo').onclick=()=>{if(history.redo()){dirty=true;selection=null;refresh();}};
+$('next-issue').onclick=()=>{const all=[...project().lessons.filter(c=>!c.reviewed).map(c=>({kind:'lesson',c})),...project().calendar.filter(c=>!c.reviewed).map(c=>({kind:'calendar',c}))];if(!all.length)return;const currentIndex=all.findIndex(item=>selection&&item.kind===selection.kind&&(item.kind==='lesson'?item.c.term===$('term').value&&item.c.classId===$('class-id').value&&item.c.day===selection.day&&item.c.period===selection.period:item.c.scope===$('scope').value&&item.c.date===selection.date));const item=all[(currentIndex+1)%all.length];if(item.kind==='lesson'){view='lesson';$('term').value=item.c.term;$('class-id').value=item.c.classId;selection={kind:'lesson',day:item.c.day,period:item.c.period};}else{view='calendar';$('scope').value=item.c.scope;selection={kind:'calendar',date:item.c.date};}refresh();document.querySelector('.slot.selected')?.scrollIntoView({block:'nearest'});};
+function canReplace(){return !dirty||confirm('保存していない変更があります。別のファイルを開きますか？');}
+$('pdf-input').onchange=async e=>{const file=e.target.files[0];e.target.value='';if(!file||!canReplace())return;try{const bytes=new Uint8Array(await file.arrayBuffer()),doc=await pdfjs.getDocument({data:bytes.slice()}).promise;const year=Number($('year').value),term=file.name.includes('後期')?'F':$('term').value;const next=emptyProject(to64(bytes),file.name,year,term),warnings=[];for(let n=1;n<=doc.numPages;n++){const p=await doc.getPage(n),v=p.getViewport({scale:1}),text=await p.getTextContent(),found=extractPage(text.items,v.width,v.height,year,term,n);next.lessons.push(...found.lessons);next.calendar.push(...found.calendar);warnings.push(...found.warnings);}history=new History(next);pdf=doc;page=1;dirty=true;selection=null;$('term').value=term;if(next.calendar.length){view='calendar';$('scope').value=next.calendar[0].scope;}else view='lesson';await renderPdf();refresh();say(warnings.join('\n')||'抽出した内容を確認してください');}catch(error){say(`PDFを開けませんでした: ${error.message}`);}};
+$('project-input').onchange=async e=>{const file=e.target.files[0];e.target.value='';if(!file||!canReplace())return;try{let next=JSON.parse(await file.text());if(next.version===1&&isProjectShape(next))next=migrateV1(next,Number($('year').value),$('term').value);if(!validProject(next))throw Error('形式が正しくありません');const doc=await pdfjs.getDocument({data:from64(next.pdf)}).promise;history=new History(next);pdf=doc;page=1;dirty=false;selection=null;$('year').value=next.year;$('term').value=next.term;if(next.calendar.length){$('scope').value=next.calendar[0].scope;view='calendar';}else view='lesson';await renderPdf();refresh();say('作業を開きました');}catch(error){say(`作業ファイルを開けませんでした: ${error.message}`);}};
+$('save').onclick=()=>{if(!project().pdf){say('PDFを開いてください');return;}const url=URL.createObjectURL(new Blob([JSON.stringify(project())],{type:'application/json'})),a=document.createElement('a');a.href=url;a.download=`${project().pdfName.replace(/\.pdf$/i,'')}.sktjf-project.json`;a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);dirty=false;say('作業ファイルを保存しました');};
+window.addEventListener('beforeunload',e=>{if(dirty){e.preventDefault();e.returnValue='';}});
+window.addEventListener('copy',e=>{if(e.target.matches('input,textarea,select')||!selection)return;const cell=selection.kind==='lesson'?getLesson(selection.day,selection.period):getDay(selection.date);if(cell){e.clipboardData.setData('text/plain',JSON.stringify({format:'sktjf-table-cell',kind:selection.kind,cell}));e.preventDefault();}});
+window.addEventListener('paste',e=>{if(e.target.matches('input,textarea,select')||!selection)return;try{const data=JSON.parse(e.clipboardData.getData('text/plain'));if(data.format!=='sktjf-table-cell'||data.kind!==selection.kind)throw Error();change(p=>{if(selection.kind==='lesson'){const source=data.cell;if(!Array.isArray(source.entries))throw Error();putLesson(p,{...source,term:$('term').value,classId:$('class-id').value,day:selection.day,period:selection.period,reviewed:false});}else{const c={...data.cell,date:selection.date,scope:$('scope').value,reviewed:false};p.calendar=p.calendar.filter(x=>!(x.scope===c.scope&&x.date===c.date));p.calendar.push(c);}});e.preventDefault();}catch{say('コピーしたセルを貼り付けてください');}});
+window.addEventListener('keydown',e=>{if(e.target.matches('input,textarea,select'))return;const mod=e.ctrlKey||e.metaKey;if(mod&&e.key.toLowerCase()==='z'){e.preventDefault();(e.shiftKey?$('redo'):$('undo')).click();}else if(mod&&e.key.toLowerCase()==='y'){e.preventDefault();$('redo').click();}else if(selection&&['ArrowLeft','ArrowRight','ArrowUp','ArrowDown'].includes(e.key)){e.preventDefault();const key=selection.kind==='lesson'?{...selection,day:Math.max(1,Math.min(5,selection.day+(e.key==='ArrowRight'?1:e.key==='ArrowLeft'?-1:0))),period:Math.max(1,Math.min(4,selection.period+(e.key==='ArrowDown'?1:e.key==='ArrowUp'?-1:0)))}:{...selection,date:dateAdd(selection.date,e.key==='ArrowRight'?1:e.key==='ArrowLeft'?-1:e.key==='ArrowDown'?7:-7)};selection=key;refresh();document.querySelector('.slot.selected')?.focus();}});
+refresh();

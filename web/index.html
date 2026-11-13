@@ -1,27 +1,5 @@
-<!doctype html>
-<html lang="ja">
-<head>
-  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>SKTJF 時間割エディター</title><link rel="stylesheet" href="/web/style.css">
-</head>
-<body>
-<header>
-  <div><strong>SKTJF</strong><span class="subtitle">時間割エディター</span></div>
-  <div class="actions"><label class="button">PDFを開く<input id="pdf-input" type="file" accept="application/pdf" hidden></label><label class="button">作業を開く<input id="project-input" type="file" accept=".json,application/json" hidden></label><button id="save">作業を保存</button></div>
-</header>
-<main>
-  <section class="workspace" aria-label="PDF">
-    <div class="toolbar"><button id="prev">前のページ</button><span id="page-label">—</span><button id="next">次のページ</button><span class="divider"></span><button id="zoom-out" aria-label="縮小">−</button><span id="zoom-label">100%</span><button id="zoom-in" aria-label="拡大">＋</button><span class="divider"></span><button id="draw" aria-pressed="false">セルを追加</button><select id="kind" aria-label="セルの種類"><option value="lesson">授業</option><option value="calendar">日付</option></select></div>
-    <p id="hint" class="hint">PDFを開いてください</p>
-    <div id="viewport" class="viewport"><div id="paper" class="paper"><canvas id="pdf"></canvas><div id="overlay" class="overlay"></div></div></div>
-  </section>
-  <aside>
-    <div class="panel-head"><div><h1>セルの確認</h1><p id="summary">PDFを開いて作業を始めます</p></div><button id="next-issue">次の未確認</button></div>
-    <div class="tools"><button id="undo">元に戻す</button><button id="redo">やり直す</button><button id="split-v">左右に分割</button><button id="split-h">上下に分割</button><button id="merge">結合</button><button id="delete">削除</button></div>
-    <p class="muted">Ctrlを押しながら複数選択できます。矢印キーでセルを移動します。</p>
-    <div id="editor" class="editor"><p class="empty">セルを選択してください</p></div>
-    <div id="status" role="status" aria-live="polite"></div>
-  </aside>
-</main>
-<script type="module" src="/web/app.js"></script>
-</body></html>
+<!doctype html><html lang="ja"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>SKTJF 時間割エディター</title><link rel="stylesheet" href="/web/style.css"></head>
+<body><header><div><strong>SKTJF</strong><span>時間割エディター</span></div><div class="actions"><label class="button">PDFを開く<input id="pdf-input" type="file" accept="application/pdf" hidden></label><label class="button">作業を開く<input id="project-input" type="file" accept=".json,application/json" hidden></label><button id="save">作業を保存</button></div></header>
+<main><section class="pane pdf-pane"><div class="pane-head"><div><h1>元のPDF</h1><p id="pdf-name">PDFを開いてください</p></div><div class="toolbar"><button id="prev">前へ</button><span id="page-label">—</span><button id="next">次へ</button><button id="zoom-out" aria-label="PDFを縮小">−</button><span id="zoom-label">100%</span><button id="zoom-in" aria-label="PDFを拡大">＋</button></div></div><div class="pdf-scroll"><canvas id="pdf"></canvas></div></section>
+<section class="pane data-pane"><div class="pane-head"><div><h1>時間割</h1><p id="summary">セルを選んで編集します</p></div><div class="toolbar"><label>年度 <input id="year" type="number" min="2000" max="2100" value="2026"></label><label>学期 <select id="term"><option value="S">前期</option><option value="F">後期</option></select></label><label>クラス <select id="class-id"></select></label><button id="undo">元に戻す</button><button id="redo">やり直す</button><button id="table-zoom-out" aria-label="表を縮小">−</button><button id="table-zoom-in" aria-label="表を拡大">＋</button></div><div class="toolbar"><button id="lesson-tab" aria-pressed="true">授業表</button><button id="calendar-tab" aria-pressed="false">隔週表</button><label id="scope-label" hidden>対象 <input id="scope" list="scopes" value="1・2・3年生"><datalist id="scopes"></datalist></label><label id="week-label" hidden>週を追加 <input id="week" type="date"></label><button id="add-week" hidden>週を追加</button><button id="next-issue">次の未確認</button></div></div>
+<div class="data-scroll"><div id="table-wrap"></div><div id="editor"><p class="empty">表のセルを選択してください</p></div><div id="legacy" hidden></div><p id="status" role="status" aria-live="polite"></p></div></section></main><script type="module" src="/web/app.js"></script></body></html>
