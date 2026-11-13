@@ -6,7 +6,9 @@
   "scripts": {
     "start": "node server.mjs",
     "test": "node --test",
-    "validate": "node bin/validate.mjs"
+    "validate": "node bin/validate.mjs",
+    "build-release": "node bin/build-release.mjs",
+    "validate-release": "node bin/validate-release.mjs"
   },
   "dependencies": {
     "ajv": "^8.20.0",

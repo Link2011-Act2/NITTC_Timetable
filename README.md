@@ -35,6 +35,8 @@ npm start
 
 形式の仕様は [SKTJF v1](docs/sktjf-v1.md) にあります。既存のSKTJFファイルの構文と整合性は `npm run validate -- ファイル名` で検証できます。形式の検証だけで、内容の正確性や公開可能性は確認できません。
 
+確認済みデータからの配信候補作成とmanifest検証は [配信候補の作成と検証](docs/distribution.md) を参照してください。GitHubへの公開はまだ実装していません。
+
 ## テスト
 
 ```sh

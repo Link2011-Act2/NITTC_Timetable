@@ -1,0 +1,35 @@
+name: Validate SKTJF distribution
+on:
+  workflow_call:
+    inputs:
+      artifact_name:
+        required: true
+        type: string
+      class_ids:
+        required: true
+        type: string
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - uses: actions/download-artifact@v4
+        with:
+          name: ${{ inputs.artifact_name }}
+          path: candidate
+      - name: Validate class assets
+        env:
+          EXPECTED_CLASSES: ${{ inputs.class_ids }}
+        shell: bash
+        run: |
+          if [[ ! "$EXPECTED_CLASSES" =~ ^(1-[1-4]|[2-5][MEIB]|AC-[A-Z0-9]+)(\ (1-[1-4]|[2-5][MEIB]|AC-[A-Z0-9]+))*$ ]]; then
+            echo 'Invalid class list' >&2
+            exit 1
+          fi
+          read -r -a class_ids <<< "$EXPECTED_CLASSES"
+          npm run validate-release -- candidate "${class_ids[@]}"
