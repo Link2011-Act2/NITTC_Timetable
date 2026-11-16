@@ -2,7 +2,7 @@ import { dateAdd, emptyDay, emptyLesson, isoDate } from './table-model.js';
 
 export function parseCalendarText(raw) {
   const cell={dayType:'',lessonDay:'',lessonType:'',label:''};
-  const match=raw.match(/^\s*(?:[（(]([月火水木金])[）)]\s*)?([AB])(?:\s*([^\x00-\x7f].*))?\s*$/u);
+  const match=raw.match(/^\s*(?:[（(]([月火水木金])[）)]\s*)?([AB])(?:\s*((?:TOEIC|[^\x00-\x7f]).*))?\s*$/u);
   if(match){cell.dayType=match[2];if(match[1]){cell.lessonDay=String('月火水木金'.indexOf(match[1])+1);cell.lessonType=match[2];}cell.label=match[3]?.trim()||'';}
   else if(/^(祝日|振替休日|代休|臨時休業)$/.test(raw)){cell.dayType='HOLIDAY';cell.label=raw;}
   else cell.label=raw;

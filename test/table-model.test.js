@@ -67,6 +67,8 @@ import { extractPage, parseCalendarText } from '../web/extract.js';
 test('calendar extraction keeps A/B and substitution alongside a source event',()=>{
   assert.deepEqual(parseCalendarText('A 清掃'),{dayType:'A',lessonDay:'',lessonType:'',label:'清掃'});
   assert.deepEqual(parseCalendarText('（金）B高専祭'),{dayType:'B',lessonDay:'5',lessonType:'B',label:'高専祭'});
+  assert.deepEqual(parseCalendarText('BTOEIC'),{dayType:'B',lessonDay:'',lessonType:'',label:'TOEIC'});
+  assert.deepEqual(parseCalendarText('（金）A TOEIC'),{dayType:'A',lessonDay:'5',lessonType:'A',label:'TOEIC'});
   assert.deepEqual(parseCalendarText('祝日'),{dayType:'HOLIDAY',lessonDay:'',lessonType:'',label:'祝日'});
   assert.deepEqual(parseCalendarText('AB'),{dayType:'',lessonDay:'',lessonType:'',label:'AB'});
 });
