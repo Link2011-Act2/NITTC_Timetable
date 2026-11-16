@@ -1,6 +1,14 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { addSourcePreservingEdits, adjacentVisibleSlot, applyReviewPlan, captureHistory, cellProblems, exportConfigForTerm, setExportConfigForTerm, historyUnchanged, matchesSavedSnapshot, missingCalendarRange, missingSlots, nextReviewItem, pasteTableCell, periodCount, placeLegacyEntry, planReviewRange, reviewItems, validClassId } from '../web/table-model.js';
+import { addSourcePreservingEdits, adjacentVisibleSlot, applyReviewPlan, captureHistory, cellProblems, exportConfigForTerm, setExportConfigForTerm, historyUnchanged, initialProjectView, matchesSavedSnapshot, missingCalendarRange, missingSlots, nextReviewItem, pasteTableCell, periodCount, placeLegacyEntry, planReviewRange, reviewItems, validClassId } from '../web/table-model.js';
+
+test('opening a project starts with a lesson and its source instead of a mismatched calendar',()=>{
+  const project={term:'S',sources:[{id:'calendar'},{id:'lessons'}],calendar:[{scope:'1・2・3年生',sourceId:'calendar',sourcePage:1}],
+    lessons:[{term:'F',classId:'1-1',sourceId:'lessons',sourcePage:2},{term:'S',classId:'1-2',sourceId:'lessons',sourcePage:3}]};
+  assert.deepEqual(initialProjectView(project,'1-1'),{view:'lesson',term:'S',classId:'1-2',scope:'1・2・3年生',sourceId:'lessons',page:3});
+  project.lessons=[];
+  assert.deepEqual(initialProjectView(project,'1-1'),{view:'calendar',term:'S',classId:'1-1',scope:'1・2・3年生',sourceId:'calendar',page:1});
+});
 
 test('export dates remain associated with their term, including older saved projects', () => {
   const project = {term:'S', exportConfig:{'export-start':'2026-04-01','export-end':'2026-09-30','period-1-start':'08:40'}};

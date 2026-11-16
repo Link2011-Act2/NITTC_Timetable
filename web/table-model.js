@@ -13,6 +13,18 @@ export const periodCount = project => project.lessons.reduce((max,c)=>Math.max(m
 export function emptyProject(pdf, pdfName, year, term) {
   return {version:3,sources:pdf?[{id:'legacy',name:pdfName,data:pdf,sha256:''}]:[],year,term,lessons:[],calendar:[],legacyCells:[],warnings:[]};
 }
+/** Open on an existing lesson and its source, or a calendar when no lessons exist. */
+export function initialProjectView(project, preferredClass) {
+  const sameTerm=project.lessons.filter(cell=>cell.term===project.term);
+  const lessons=sameTerm.length?sameTerm:project.lessons;
+  const first=lessons.find(cell=>cell.classId===preferredClass)||lessons[0];
+  const calendar=project.calendar[0];
+  const source=first||calendar;
+  return {view:first?'lesson':calendar?'calendar':'lesson',term:first?.term||project.term,
+    classId:first?.classId||preferredClass,scope:calendar?.scope||'',
+    sourceId:project.sources.some(item=>item.id===source?.sourceId)?source.sourceId:project.sources[0].id,
+    page:source?.sourcePage||1};
+}
 export function lessonAt(project, term, classId, day, period) {
   return project.lessons.find(c=>c.term===term && c.classId===classId && c.day===day && c.period===period);
 }

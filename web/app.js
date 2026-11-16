@@ -1,6 +1,6 @@
 import * as pdfjs from '/node_modules/pdfjs-dist/build/pdf.mjs';
 import { isProjectShape } from './model.js';
-import { addSourcePreservingEdits, adjacentVisibleSlot, applyReviewPlan, captureHistory, cellProblems, classIds, dateAdd, emptyDay, emptyLesson, emptyProject, ensureEntryIds, exportConfigForTerm, setExportConfigForTerm, History, historyUnchanged, lessonAt, matchesSavedSnapshot, migrateV1, migrateV2, missingCalendarRange, missingSlots, mondayOf, nextReviewItem, pasteTableCell, periodCount, placeLegacyEntry, planReviewRange, putLesson, reviewItems, validClassId, validProject } from './table-model.js';
+import { addSourcePreservingEdits, adjacentVisibleSlot, applyReviewPlan, captureHistory, cellProblems, classIds, dateAdd, emptyDay, emptyLesson, emptyProject, ensureEntryIds, exportConfigForTerm, setExportConfigForTerm, History, historyUnchanged, initialProjectView, lessonAt, matchesSavedSnapshot, migrateV1, migrateV2, missingCalendarRange, missingSlots, mondayOf, nextReviewItem, pasteTableCell, periodCount, placeLegacyEntry, planReviewRange, putLesson, reviewItems, validClassId, validProject } from './table-model.js';
 import { extractPage } from './extract.js';
 pdfjs.GlobalWorkerOptions.workerSrc='/node_modules/pdfjs-dist/build/pdf.worker.mjs';
 const $=id=>document.getElementById(id), weekday=['月','火','水','木','金','土','日'];
@@ -209,9 +209,11 @@ $('project-input').onchange=async e=>{
     const migrated=ensureEntryIds(next);
     if(!historyUnchanged(history,captured))throw Error('読み込み中に変更されました。保存してからもう一度開いてください');
     const request=++sourceRequest;renderToken++;history=new History(next);sourcePageCounts=new Map(next.sources.map((source,index)=>[source.id,docs[index].numPages]));const loadedHistory=history;committed=true;
-    pdf=docs[0];sourceId=next.sources[0].id;page=1;dirty=migrated;selection=null;$('year').value=next.year;$('term').value=next.term;restoreExportConfig(exportConfigForTerm(next,next.term));$('bulk-start').value=next.exportConfig?.['export-start']||'';$('bulk-end').value=next.exportConfig?.['export-end']||'';$('bulk-status').textContent='';
-    if(next.calendar.length){$('scope').value=next.calendar[0].scope;if(!$('export-scope').value)$('export-scope').value=next.calendar[0].scope;view='calendar';}else view='lesson';
-    refresh();docs.slice(1).forEach(doc=>{doc.destroy().catch(()=>{});});await renderPdf();if(history===loadedHistory&&sourceRequest===request)say('作業を開きました');
+    const initial=initialProjectView(next,$('class-id').value),sourceIndex=next.sources.findIndex(source=>source.id===initial.sourceId);
+    pdf=docs[sourceIndex];sourceId=initial.sourceId;page=initial.page<=pdf.numPages?initial.page:1;view=initial.view;dirty=migrated;selection=null;$('year').value=next.year;$('term').value=initial.term;$('class-id').value=initial.classId;lastClassId=initial.classId;
+    const config=exportConfigForTerm(next,initial.term);restoreExportConfig(config);$('bulk-start').value=config['export-start']||'';$('bulk-end').value=config['export-end']||'';$('bulk-status').textContent='';
+    if(initial.scope){$('scope').value=initial.scope;if(!$('export-scope').value)$('export-scope').value=initial.scope;}
+    refresh();docs.forEach((doc,index)=>{if(index!==sourceIndex)doc.destroy().catch(()=>{});});await renderPdf();if(history===loadedHistory&&sourceRequest===request)say('作業を開きました');
   }catch(error){if(!committed)for(const doc of docs)await doc.destroy().catch(()=>{});say(committed?'作業を開きましたが、PDFを表示できませんでした':`作業ファイルを開けませんでした: ${error.message}`);}
 };
 $('save').onclick=async()=>{
