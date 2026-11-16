@@ -8,6 +8,7 @@
     "test": "node --test",
     "validate": "node bin/validate.mjs",
     "build-release": "node bin/build-release.mjs",
+    "finalize-manifest": "node bin/finalize-manifest.mjs",
     "validate-release": "node bin/validate-release.mjs"
   },
   "dependencies": {

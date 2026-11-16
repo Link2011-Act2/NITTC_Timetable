@@ -1,5 +1,14 @@
 import { dateAdd, emptyDay, emptyLesson, isoDate } from './table-model.js';
 
+export function parseCalendarText(raw) {
+  const cell={dayType:'',lessonDay:'',lessonType:'',label:''};
+  const match=raw.match(/^\s*(?:[（(]([月火水木金])[）)]\s*)?([AB])(?:\s*([^\x00-\x7f].*))?\s*$/u);
+  if(match){cell.dayType=match[2];if(match[1]){cell.lessonDay=String('月火水木金'.indexOf(match[1])+1);cell.lessonType=match[2];}cell.label=match[3]?.trim()||'';}
+  else if(/^(祝日|振替休日|代休|臨時休業)$/.test(raw)){cell.dayType='HOLIDAY';cell.label=raw;}
+  else cell.label=raw;
+  return cell;
+}
+
 // School-specific heuristic: extract all pages, retain uncertain text for human review.
 export function extractPage(items, width, height, year, term, pageNumber) {
   const texts=items.filter(i=>i.str?.trim() && i.transform).map(i=>({text:i.str.trim(),x:i.transform[4],y:i.transform[5]}));
@@ -20,9 +29,7 @@ export function extractPage(items, width, height, year, term, pageNumber) {
         const idx=dow-1,left=idx===0?(headers[0].x-(boundaries[0]-headers[0].x)):boundaries[idx-1],right=idx===4?width:boundaries[idx];
         const raw=texts.filter(t=>t.x>=left&&t.x<right&&Math.abs(t.y-row.y)<7).sort((a,b)=>a.x-b.x).map(t=>t.text).join('');
         const cell={...emptyDay(date),scope,raw};
-        if(raw==='A'||raw==='B')cell.dayType=raw;
-        else if(/^(祝日|振替休日|代休|臨時休業)$/.test(raw)){cell.dayType='HOLIDAY';cell.label=raw;}
-        else {const match=raw.match(/^[（(]([月火水木金])[）)]([AB])$/); if(match){cell.dayType=match[2];cell.lessonDay=String('月火水木金'.indexOf(match[1])+1);cell.lessonType=match[2];}else cell.label=raw;}
+        Object.assign(cell,parseCalendarText(raw));
         out.calendar.push(cell);
       }
     }
@@ -37,8 +44,29 @@ export function extractPage(items, width, height, year, term, pageNumber) {
       const left=idx===0?xs[0]-(boundaries[0]-xs[0]):boundaries[idx-1],right=idx===19?width:boundaries[idx];
       const next=anchors.find(a=>a.y<anchor.y),bottom=next?next.y+5:anchor.y-(anchors[0].y-anchors[1].y)+5;
       const raw=texts.filter(t=>t.x>=left&&t.x<right&&t.y<=anchor.y+5&&t.y>bottom).sort((a,b)=>b.y-a.y||a.x-b.x).map(t=>t.text).join(' ');
-      if(raw)out.lessons.push({term,classId:`1-${anchor.text}`,day:Math.floor(idx/4)+1,period:idx%4+1,entries:[{...emptyLesson(),subject:raw}],reviewed:false,raw});
+      if(raw){
+        const excluded=/^※\s*[3３]$/.test(raw),simple=excluded||raw==='補講'||/^※\s*[2２]$/.test(raw);
+        out.lessons.push({term,classId:`1-${anchor.text}`,day:Math.floor(idx/4)+1,period:idx%4+1,
+          entries:excluded?[]:[{...emptyLesson(),subject:raw}],...(excluded?{state:'EXCLUDED'}:{}),rawUnparsed:!simple,reviewed:false,raw});
+      }
     }
+    // Only the supplied four-department layout is recognized. Shared cells can
+    // span rows; keep their text unconfirmed instead of assigning it by guess.
+    const names=['機械','電気・電子','情報','化学・生物'],departments=['M','E','I','B'];
+    const upper=texts.filter(t=>t.x>width*.085&&t.x<width*.12&&names.includes(t.text)&&t.y<anchors[3].y-height*.015).sort((a,b)=>b.y-a.y);
+    const layout=upper.length===16&&upper.every((a,i)=>a.text===names[i%4]&&(i===0||(upper[i-1].y-a.y>height*.02&&upper[i-1].y-a.y<height*.05)));
+    if(layout){
+      for(let i=0;i<upper.length;i++)for(let idx=0;idx<20;idx++){
+        const anchor=upper[i],left=idx===0?xs[0]-(boundaries[0]-xs[0]):boundaries[idx-1],right=idx===19?width:boundaries[idx];
+        const bottom=i<upper.length-1?upper[i+1].y+5:anchor.y-(upper[i-1].y-anchor.y)+5;
+        const raw=texts.filter(t=>t.x>=left&&t.x<right&&t.y<=anchor.y+5&&t.y>bottom).sort((a,b)=>b.y-a.y||a.x-b.x).map(t=>t.text).join(' ');
+        if(!raw)continue;
+        const excluded=/^※\s*[3３]$/.test(raw),simple=excluded||raw==='補講'||/^※\s*[2２]$/.test(raw);
+        out.lessons.push({term,classId:`${Math.floor(i/4)+2}${departments[i%4]}`,day:Math.floor(idx/4)+1,period:idx%4+1,
+          entries:excluded?[]:[{...emptyLesson(),subject:raw}],...(excluded?{state:'EXCLUDED'}:{}),rawUnparsed:!simple,reviewed:false,raw});
+      }
+      out.warnings.push(`ページ${pageNumber}: 2年生以上の抽出結果を確認してください`);
+    } else out.warnings.push(`ページ${pageNumber}: 2年生以上の時間割は手入力してください`);
   } else out.warnings.push(`ページ${pageNumber}: 表の構造を判定できませんでした`);
   return out;
 }
