@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://link2011-act2.github.io/NITTC-Timetable/schema/sktjf-v1.schema.json",
+  "$id": "https://link2011-act2.github.io/NITTC_Timetable/schema/sktjf-v1.schema.json",
   "title": "SKTJF version 1 class timetable",
   "type": "object",
   "additionalProperties": false,
