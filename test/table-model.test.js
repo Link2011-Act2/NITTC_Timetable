@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { addSourcePreservingEdits, adjacentVisibleSlot, applyReviewPlan, captureHistory, cellProblems, exportConfigForTerm, setExportConfigForTerm, historyUnchanged, initialProjectView, matchesSavedSnapshot, missingCalendarRange, missingSlots, nextReviewItem, pasteTableCell, periodCount, placeLegacyEntry, planReviewRange, reviewItems, validClassId } from '../web/table-model.js';
+import { addSourcePreservingEdits, adjacentVisibleSlot, applyReviewPlan, captureHistory, cellProblems, exportConfigForTerm, setExportConfigForTerm, historyUnchanged, initialProjectView, matchesSavedSnapshot, missingCalendarRange, missingSlots, nextReviewItem, pasteTableCell, periodCount, placeLegacyEntry, planReviewRange, putWeekDay, reviewItems, validClassId, weekDayProblems } from '../web/table-model.js';
 
 test('opening a project starts with a lesson and its source instead of a mismatched calendar',()=>{
   const project={term:'S',sources:[{id:'calendar'},{id:'lessons'}],calendar:[{scope:'1・2・3年生',sourceId:'calendar',sourcePage:1}],
@@ -61,15 +61,77 @@ test('missing calendar cells cover only displayed weeks and selected scope', () 
   assert.deepEqual(missingSlots(project,'calendar','S','1-1','1-3').map(s=>s.date),['2026-04-07','2026-04-08','2026-04-09','2026-04-10']);
   assert.deepEqual(missingSlots(project,'calendar','S','1-1','none'),[]);
 });
-import { addSource, emptyDay, emptyLesson, emptyProject, History, lessonAt, migrateV1, migrateV2, putLesson, validProject } from '../web/table-model.js';
-import { extractPage, parseCalendarText } from '../web/extract.js';
+import { addSource, emptyDay, emptyLesson, emptyProject, History, lessonAt, migrateV1, migrateV2, putLesson, putWeekSeries, validProject } from '../web/table-model.js';
 
-test('calendar extraction keeps A/B and substitution alongside a source event',()=>{
-  assert.deepEqual(parseCalendarText('A 清掃'),{dayType:'A',lessonDay:'',lessonType:'',label:'清掃'});
-  assert.deepEqual(parseCalendarText('（金）B高専祭'),{dayType:'B',lessonDay:'5',lessonType:'B',label:'高専祭'});
+test('project retains explicitly grouped lesson opportunities without altering reviews',()=>{
+  const project=emptyProject('pdf','test.pdf',2026,'S');
+  project.weekSeries=[{term:'S',classId:'1-1',id:'shared',dayOfWeek:1,periods:[1,2],lessonIds:['one','two'],cycle:'WEEKLY',
+    sources:[{sourceId:'legacy',page:1}],reviewed:false}];
+  const restored=JSON.parse(JSON.stringify(project));
+  assert.equal(validProject(restored),true);
+  assert.deepEqual(restored.weekSeries,project.weekSeries);
+  restored.weekSeries[0].periods=[1,1];assert.equal(validProject(restored),false);
+  assert.equal(project.weekSeries[0].reviewed,false);
+});
+
+test('saved counting rules require valid dates, periods and source references',()=>{
+  const project=emptyProject('pdf','test.pdf',2026,'S');
+  const policy={regularDayCounts:true,holidayCounts:false,eventCounts:{EVENT:null},ordinaryPeriodCounts:true,
+    officialPeriodOverrides:[{date:'2026-04-06',period:1,counts:false}],confirmedNonTeachingDates:['2026-04-07'],sources:[{sourceId:'legacy',page:1}]};
+  project.weekSeries=[{term:'S',classId:'1-1',id:'shared',dayOfWeek:1,periods:[1,2],lessonIds:['one','two'],cycle:'WEEKLY',
+    sources:[{sourceId:'legacy',page:1}],reviewed:false,countingPolicy:policy}];
+  assert.equal(validProject(JSON.parse(JSON.stringify(project))),true);
+  for(const mutate of [p=>p.sources[0].sourceId='unknown',p=>p.officialPeriodOverrides[0].date='2026-02-30',
+    p=>p.officialPeriodOverrides[0].period=3,p=>p.officialPeriodOverrides.push({...p.officialPeriodOverrides[0]}),
+    p=>p.eventCounts.EVENT='yes',p=>p.confirmedNonTeachingDates.push('2026-04-07')]){
+    const changed=structuredClone(project);mutate(changed.weekSeries[0].countingPolicy);assert.equal(validProject(changed),false);
+  }
+});
+
+test('opportunity groups use explicit membership and invalidate review only for relevant edits',()=>{
+  const p=emptyProject('pdf','test.pdf',2026,'S');
+  const cell=(period,id,weekEnd)=>({term:'S',classId:'1-1',day:1,period,sourceId:'legacy',sourcePage:1,reviewed:true,raw:'',
+    entries:[{...emptyLesson(),id,subject:`授業${id}`,weekStart:'',weekEnd,weekSourceNotation:'（〜8週）'}]});
+  putLesson(p,cell(1,'a','8'));putLesson(p,cell(2,'b','8'));putLesson(p,cell(3,'c',''));
+  const group=putWeekSeries(p,{term:'S',classId:'1-1',dayOfWeek:1,lessonIds:['a','b'],cycle:'WEEKLY',id:'shared'});
+  assert.deepEqual(group.periods,[1,2]);assert.deepEqual(group.lessonIds,['a','b']);assert.equal(group.reviewed,false);
+  group.countingPolicy={regularDayCounts:true,holidayCounts:false,eventCounts:{},ordinaryPeriodCounts:true,
+    officialPeriodOverrides:[{date:'2026-04-06',period:2,counts:false}],confirmedNonTeachingDates:[],sources:[{sourceId:'legacy',page:1}]};
+  const before=structuredClone(p);
+  assert.throws(()=>putWeekSeries(p,{term:'S',classId:'1-1',dayOfWeek:1,lessonIds:['a'],cycle:'WEEKLY',id:'shared'}),/数え方/);
+  assert.deepEqual(p,before);
+  assert.ok(cellProblems(p,'lesson',lessonAt(p,'S','1-1',1,1)).some(problem=>problem.includes('授業機会')));
+  assert.ok(reviewItems(p).some(item=>item.kind==='lesson'&&item.c.period===1));
+  group.reviewed=true;
+  assert.equal(cellProblems(p,'lesson',lessonAt(p,'S','1-1',1,1)).some(problem=>problem.includes('授業機会')),false);
+  const edited=structuredClone(lessonAt(p,'S','1-1',1,1));edited.entries[0].room='新しい教室';putLesson(p,edited);
+  assert.equal(p.weekSeries[0].reviewed,true);
+  const changed=structuredClone(edited);changed.entries[0].weekEnd='9';putLesson(p,changed);assert.equal(p.weekSeries[0].reviewed,false);
+  assert.throws(()=>putWeekSeries(p,{term:'S',classId:'1-1',dayOfWeek:1,lessonIds:['a','c'],cycle:'WEEKLY',id:'other'}),/別の授業機会/);
+  assert.throws(()=>putWeekSeries(p,{term:'S',classId:'1-1',dayOfWeek:1,lessonIds:['missing'],cycle:'WEEKLY',id:'invalid'}),/授業/);
+  assert.equal(validProject(JSON.parse(JSON.stringify(p))),true);
+});
+import { draftLessonEntry, extractPage, parseCalendarText } from '../web/extract.js';
+
+test('draft extraction structures clear week notes and leaves ambiguous source text for review',()=>{
+  const first=draftLessonEntry('卒研（9週〜）',1);
+  assert.equal(first.subject,'卒研');assert.equal(first.weekStart,'9');assert.equal(first.weekEnd,'');assert.equal(first.weekSourceNotation,'（9週〜）');
+  const second=draftLessonEntry('工学実験・実習Ⅲ（〜10週）',1);
+  assert.equal(second.subject,'工学実験・実習III');assert.equal(second.weekEnd,'10');assert.equal(second.weekSourceNotation,'（〜10週）');
+  for(const [raw,count] of [['製図 / 卒研（9週〜）',1],['実験 先生（〜10週）',1],['実験 先生（〜10週）',2],['（9週〜）',1]]){
+    const entry=draftLessonEntry(raw,count);assert.equal(entry.weekStart,undefined);assert.equal(entry.weekEnd,undefined);
+  }
+});
+
+test('calendar extraction keeps A/B and substitution but omits a school event on the same day',()=>{
+  assert.deepEqual(parseCalendarText('A 清掃'),{dayType:'A',lessonDay:'',lessonType:'',label:''});
+  assert.deepEqual(parseCalendarText('（金）B高専祭'),{dayType:'B',lessonDay:'5',lessonType:'B',label:''});
+  assert.deepEqual(parseCalendarText('A終業行事'),{dayType:'A',lessonDay:'',lessonType:'',label:''});
   assert.deepEqual(parseCalendarText('BTOEIC'),{dayType:'B',lessonDay:'',lessonType:'',label:'TOEIC'});
   assert.deepEqual(parseCalendarText('（金）A TOEIC'),{dayType:'A',lessonDay:'5',lessonType:'A',label:'TOEIC'});
   assert.deepEqual(parseCalendarText('祝日'),{dayType:'HOLIDAY',lessonDay:'',lessonType:'',label:'祝日'});
+  assert.deepEqual(parseCalendarText('高専祭'),{dayType:'HOLIDAY',lessonDay:'',lessonType:'',label:'高専祭',eventKind:'EVENT'});
+  assert.deepEqual(parseCalendarText('工場見学'),{dayType:'HOLIDAY',lessonDay:'',lessonType:'',label:'工場見学',eventKind:'EXCURSION'});
   assert.deepEqual(parseCalendarText('AB'),{dayType:'',lessonDay:'',lessonType:'',label:'AB'});
 });
 
@@ -89,6 +151,27 @@ test('lesson edits keep independent slots and support undo',()=>{
   assert.equal(lessonAt(history.current,'S','1-1',1,1).entries.length,2);
   history.undo();assert.equal(lessonAt(history.current,'S','1-1',1,1).entries.length,1);
   history.redo();assert.equal(lessonAt(history.current,'S','1-1',1,1).entries.length,2);
+});
+test('week range metadata survives saving and invalid ranges cannot be reviewed',()=>{
+  const project=emptyProject('pdf','test.pdf',2026,'S');
+  const entry={...emptyLesson(),subject:'卒研',weekStart:'9',weekEnd:'10',weekSourceNotation:'（9～10週）'};
+  const cell={term:'S',classId:'1-1',day:1,period:1,entries:[entry],reviewed:false,sourceId:'legacy',sourcePage:1};
+  putLesson(project,cell);const reopened=JSON.parse(JSON.stringify(project));
+  assert.equal(validProject(reopened),true);assert.equal(lessonAt(reopened,'S','1-1',1,1).entries[0].weekSourceNotation,'（9～10週）');
+  assert.deepEqual(cellProblems(reopened,'lesson',reopened.lessons[0]),[]);
+  reopened.lessons[0].entries[0].weekEnd='8';
+  assert.ok(cellProblems(reopened,'lesson',reopened.lessons[0]).some(problem=>problem.includes('実施週')));
+});
+test('week calendar is scoped, separately reviewed and preserves its own source',()=>{
+  const project=emptyProject('pdf','test.pdf',2026,'S');
+  const day={scope:'1・2・3年生',date:'2026-04-06',week:'9',sourceId:'legacy',sourcePage:1,reviewed:false};
+  putWeekDay(project,day);assert.deepEqual(weekDayProblems(project,day,new Map([['legacy',1]])),[]);
+  putWeekDay(project,{...day,reviewed:true});putWeekDay(project,{...day,scope:'4・5年生',week:'8'});
+  const reopened=JSON.parse(JSON.stringify(project));assert.equal(validProject(reopened),true);
+  assert.equal(reopened.weekCalendar.length,2);assert.equal(reopened.weekCalendar[0].reviewed,true);assert.equal(reopened.weekCalendar[1].reviewed,false);
+  reopened.weekCalendar[0].week='0';assert.ok(weekDayProblems(reopened,reopened.weekCalendar[0]).length);
+  reopened.weekCalendar[0].week='9';reopened.weekCalendar[0].sourcePage=2;
+  assert.ok(weekDayProblems(reopened,reopened.weekCalendar[0],new Map([['legacy',1]])).length);
 });
 test('history isolates source metadata and PDF replacements through undo and redo',()=>{
   const project=emptyProject(null,'',2026,'S');
@@ -358,7 +441,7 @@ test('bulk review confirms only valid existing lessons in the selected range and
   project.lessons=[lesson(1),lesson(2,{sourcePage:2}),lesson(3,{entries:[{...emptyLesson(),subject:''}]}),lesson(1,{classId:'1-2'})];
   const range={kind:'lesson',term:'S',classId:'1-1',firstDay:1,lastDay:4,firstPeriod:1,lastPeriod:1},counts=new Map([['legacy',1]]);
   const plan=planReviewRange(project,range,true,counts);
-  assert.deepEqual(plan.stats,{changed:1,unchanged:0,missing:1,problems:2});
+  assert.deepEqual(plan.stats,{changed:1,unchanged:0,missing:1,problems:2,individual:0});
   const history=new History(project);history.change(p=>applyReviewPlan(p,plan));
   assert.equal(history.current.lessons[0].reviewed,true);assert.ok(history.current.lessons.slice(1).every(cell=>!cell.reviewed));
   history.undo();assert.deepEqual(history.current,project);history.redo();
@@ -370,7 +453,7 @@ test('bulk calendar review respects scope, date bounds and optional empty weeken
   const day=(date,scope,overrides={})=>({...emptyDay(date),scope,dayType:'A',sourceId:'legacy',sourcePage:1,...overrides});
   project.calendar=[day('2026-04-06','1-3'),day('2026-04-07','1-3',{dayType:''}),day('2026-04-11','1-3'),day('2026-04-06','4-5')];
   const range={kind:'calendar',scope:'1-3',start:'2026-04-06',end:'2026-04-12'},plan=planReviewRange(project,range,true,new Map([['legacy',1]]));
-  assert.deepEqual(plan.stats,{changed:2,unchanged:0,missing:3,problems:1});applyReviewPlan(project,plan);
+  assert.deepEqual(plan.stats,{changed:2,unchanged:0,missing:3,problems:1,individual:0});applyReviewPlan(project,plan);
   assert.deepEqual(project.calendar.map(cell=>cell.reviewed),[true,false,true,false]);
   assert.throws(()=>planReviewRange(project,{...range,start:'2027-04-01'},true),/範囲/);
 });
@@ -382,6 +465,24 @@ test('bulk review skips unseparated extracted A/B text until it is corrected',()
   let plan=planReviewRange(project,range,true);assert.equal(plan.stats.problems,1);assert.equal(plan.stats.changed,0);
   project.lessons[0].entries=[{...emptyLesson(),subject:'数学',cycle:'A'},{...emptyLesson(),subject:'英語',cycle:'B'}];
   plan=planReviewRange(project,range,true);assert.equal(plan.stats.changed,1);applyReviewPlan(project,plan);assert.equal(project.lessons[0].reviewed,true);
+});
+
+test('bulk review leaves standalone DD lessons for individual confirmation',()=>{
+  const project=emptyProject('pdf','test.pdf',2026,'S');
+  const dd={...emptyLesson(),subject:'実践工学II (DD)',attributes:'DD'};
+  const regular={...emptyLesson(),subject:'総合工学II',excludedAttributes:'DD'};
+  const standalone={term:'S',classId:'2M',day:1,period:1,entries:[dd],reviewed:false,raw:'',sourceId:'legacy',sourcePage:1};
+  project.lessons=[standalone,{...standalone,day:2,entries:[regular,{...dd}]}];
+  const range={kind:'lesson',term:'S',classId:'2M',firstDay:1,lastDay:2,firstPeriod:1,lastPeriod:1};
+  const plan=planReviewRange(project,range,true);
+  assert.deepEqual(plan.stats,{changed:1,unchanged:0,missing:0,problems:0,individual:1});
+  applyReviewPlan(project,plan);
+  assert.equal(standalone.reviewed,false);
+  assert.equal(project.lessons[1].reviewed,true);
+  standalone.reviewed=true;
+  assert.equal(planReviewRange(project,range,true).stats.unchanged,2);
+  applyReviewPlan(project,planReviewRange(project,range,false));
+  assert.equal(standalone.reviewed,false);
 });
 
 test('unplaced legacy lessons can be assigned one at a time with source and warnings preserved',()=>{

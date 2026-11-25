@@ -5,6 +5,8 @@ import { tmpdir } from 'node:os';
 import { join, relative, resolve, sep } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fixture } from './support/synthetic.js';
+import { buildDistribution } from '../lib/export.js';
+import { createHash } from 'node:crypto';
 
 test('release CLI writes a validated candidate once and never replaces it',async t=>{
   const parent=resolve(tmpdir()),root=await mkdtemp(join(parent,'sktjf-test-'));const rel=relative(parent,root);
@@ -35,4 +37,35 @@ test('release CLI writes a validated candidate once and never replaces it',async
   await writeFile(join(output,'manifest.json'),duplicate);
   const rejected=run('bin/validate-release.mjs',output,'1-1');assert.notEqual(rejected.status,0);assert.match(rejected.stderr,/重複/);
   assert.notEqual(finalize(output,timestamp,join(root,'tampered.json'),'1-1').status,0);
+});
+
+test('mixed release CLI preserves approved v1 and validates a counted v2 asset',async t=>{
+  const parent=resolve(tmpdir()),root=await mkdtemp(join(parent,'sktjf-v2-test-'));const rel=relative(parent,root);
+  if(!rel||rel==='..'||rel.startsWith(`..${sep}`)||resolve(parent,rel)!==root)throw new Error('unsafe temporary path');
+  t.after(()=>rm(root,{recursive:true,force:true}));
+  const {project,options}=fixture(),original=await buildDistribution(project,options),bytes=Buffer.from(JSON.stringify(original));
+  const second=structuredClone(project);for(const cell of second.lessons)cell.classId='2M';
+  const entry=second.lessons[0].entries[0];Object.assign(entry,{subject:'卒研',weekStart:'1',weekEnd:'',weekSourceNotation:'（1週〜）'});
+  second.weekSeries=[{term:'S',classId:'2M',id:'shared',dayOfWeek:1,periods:[1],lessonIds:[entry.id],cycle:'WEEKLY',reviewed:true,
+    sources:[{sourceId:'src',page:1}],countingPolicy:{regularDayCounts:true,holidayCounts:false,eventCounts:{},ordinaryPeriodCounts:true,
+      officialPeriodOverrides:[],confirmedNonTeachingDates:[],sources:[{sourceId:'src',page:1}]}}];
+  const revision='2026.S.1.Beta',config={dataFormatVersion:2,academicYear:2026,term:'S',revision,publishedAt:null,
+    releaseBaseUrl:`https://github.com/example/SKTJF/releases/download/${revision}/`,expectedClasses:['1-1','2M'],entries:[
+      {approvedV1Path:'approved.json',sha256:createHash('sha256').update(bytes).digest('hex')},
+      {projectPath:'project.json',options:{...options,classId:'2M',revision},weekDays:[]} ]};
+  await writeFile(join(root,'approved.json'),bytes);await writeFile(join(root,'project.json'),JSON.stringify(second));
+  await writeFile(join(root,'config.json'),JSON.stringify(config));const output=join(root,'release');
+  const run=(...args)=>spawnSync(process.execPath,args,{encoding:'utf8'});
+  const built=run('bin/build-release.mjs',join(root,'config.json'),output);assert.equal(built.status,0,built.stderr);
+  const validated=run('bin/validate-release.mjs',output,'1-1','2M');assert.equal(validated.status,0,validated.stderr);
+  const first=JSON.parse(await readFile(join(output,'1-1.sktjf.json'),'utf8'));
+  assert.deepEqual({...first,revision:original.revision},original);
+  const secondAsset=JSON.parse(await readFile(join(output,'2M.sktjf.json'),'utf8'));
+  assert.equal(secondAsset.weekSeries[0].countingPolicy.regularDayCounts,true);
+  const final=join(root,'published.json'),finalized=run('bin/finalize-manifest.mjs',output,'2026-04-02T12:34:56Z',final,'1-1','2M');
+  assert.equal(finalized.status,0,finalized.stderr);
+  const changed=JSON.parse(JSON.stringify(second));changed.weekSeries[0].countingPolicy.officialPeriodOverrides=[{date:'2026-04-06',period:1,counts:null}];
+  await writeFile(join(root,'project.json'),JSON.stringify(changed));
+  const unsafe=run('bin/build-release.mjs',join(root,'config.json'),join(root,'blocked'));
+  assert.notEqual(unsafe.status,0);assert.match(unsafe.stderr,/授業機会が未確認/);
 });

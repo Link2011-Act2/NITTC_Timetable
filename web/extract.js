@@ -1,10 +1,35 @@
 import { dateAdd, emptyDay, emptyLesson, isoDate } from './table-model.js';
+import { normalizeSubjectName } from './subject-names.js';
+import { parseWeekRange } from './week-ranges.js';
+
+/** Split an explicit annotation only when a single PDF text item contains one subject. */
+export function draftLessonEntry(raw, textItemCount) {
+  const subject=normalizeSubjectName(raw);
+  const parsed=textItemCount===1&&!/[\/／]/u.test(raw)?parseWeekRange(subject):null;
+  if(!parsed?.subject||/\s/u.test(parsed.subject))return {...emptyLesson(),subject};
+  return {...emptyLesson(),subject:parsed.subject,weekStart:String(parsed.activeWeekRange.start??''),
+    weekEnd:String(parsed.activeWeekRange.end??''),weekSourceNotation:parsed.notation};
+}
+
+const fullDayEvents = new Map([
+  ['始業行事', 'EVENT'],
+  ['校内体育大会', 'EVENT'],
+  ['高専祭', 'EVENT'],
+  ['工場見学', 'EXCURSION'],
+  ['卒研発表会', 'EVENT'],
+]);
+const eventsOmittedWhenWithCycle = new Set([...fullDayEvents.keys(), '清掃', '終業行事']);
 
 export function parseCalendarText(raw) {
   const cell={dayType:'',lessonDay:'',lessonType:'',label:''};
   const match=raw.match(/^\s*(?:[（(]([月火水木金])[）)]\s*)?([AB])(?:\s*((?:TOEIC|[^\x00-\x7f]).*))?\s*$/u);
-  if(match){cell.dayType=match[2];if(match[1]){cell.lessonDay=String('月火水木金'.indexOf(match[1])+1);cell.lessonType=match[2];}cell.label=match[3]?.trim()||'';}
+  if(match){cell.dayType=match[2];if(match[1]){cell.lessonDay=String('月火水木金'.indexOf(match[1])+1);cell.lessonType=match[2];}const label=match[3]?.trim()||'';if(!eventsOmittedWhenWithCycle.has(label))cell.label=label;}
   else if(/^(祝日|振替休日|代休|臨時休業)$/.test(raw)){cell.dayType='HOLIDAY';cell.label=raw;}
+  else if(fullDayEvents.has(raw.trim())){
+    cell.dayType='HOLIDAY';
+    cell.label=raw.trim();
+    cell.eventKind=fullDayEvents.get(cell.label);
+  }
   else cell.label=raw;
   return cell;
 }
@@ -43,11 +68,12 @@ export function extractPage(items, width, height, year, term, pageNumber) {
     for(const anchor of anchors.slice(0,4))for(let idx=0;idx<20;idx++){
       const left=idx===0?xs[0]-(boundaries[0]-xs[0]):boundaries[idx-1],right=idx===19?width:boundaries[idx];
       const next=anchors.find(a=>a.y<anchor.y),bottom=next?next.y+5:anchor.y-(anchors[0].y-anchors[1].y)+5;
-      const raw=texts.filter(t=>t.x>=left&&t.x<right&&t.y<=anchor.y+5&&t.y>bottom).sort((a,b)=>b.y-a.y||a.x-b.x).map(t=>t.text).join(' ');
+      const fragments=texts.filter(t=>t.x>=left&&t.x<right&&t.y<=anchor.y+5&&t.y>bottom).sort((a,b)=>b.y-a.y||a.x-b.x);
+      const raw=fragments.map(t=>t.text).join(' ');
       if(raw){
         const excluded=/^※\s*[3３]$/.test(raw),simple=excluded||raw==='補講'||/^※\s*[2２]$/.test(raw);
         out.lessons.push({term,classId:`1-${anchor.text}`,day:Math.floor(idx/4)+1,period:idx%4+1,
-          entries:excluded?[]:[{...emptyLesson(),subject:raw}],...(excluded?{state:'EXCLUDED'}:{}),rawUnparsed:!simple,reviewed:false,raw});
+          entries:excluded?[]:[draftLessonEntry(raw,fragments.length)],...(excluded?{state:'EXCLUDED'}:{}),rawUnparsed:!simple,reviewed:false,raw});
       }
     }
     // Only the supplied four-department layout is recognized. Shared cells can
@@ -59,11 +85,12 @@ export function extractPage(items, width, height, year, term, pageNumber) {
       for(let i=0;i<upper.length;i++)for(let idx=0;idx<20;idx++){
         const anchor=upper[i],left=idx===0?xs[0]-(boundaries[0]-xs[0]):boundaries[idx-1],right=idx===19?width:boundaries[idx];
         const bottom=i<upper.length-1?upper[i+1].y+5:anchor.y-(upper[i-1].y-anchor.y)+5;
-        const raw=texts.filter(t=>t.x>=left&&t.x<right&&t.y<=anchor.y+5&&t.y>bottom).sort((a,b)=>b.y-a.y||a.x-b.x).map(t=>t.text).join(' ');
+        const fragments=texts.filter(t=>t.x>=left&&t.x<right&&t.y<=anchor.y+5&&t.y>bottom).sort((a,b)=>b.y-a.y||a.x-b.x);
+        const raw=fragments.map(t=>t.text).join(' ');
         if(!raw)continue;
         const excluded=/^※\s*[3３]$/.test(raw),simple=excluded||raw==='補講'||/^※\s*[2２]$/.test(raw);
         out.lessons.push({term,classId:`${Math.floor(i/4)+2}${departments[i%4]}`,day:Math.floor(idx/4)+1,period:idx%4+1,
-          entries:excluded?[]:[{...emptyLesson(),subject:raw}],...(excluded?{state:'EXCLUDED'}:{}),rawUnparsed:!simple,reviewed:false,raw});
+          entries:excluded?[]:[draftLessonEntry(raw,fragments.length)],...(excluded?{state:'EXCLUDED'}:{}),rawUnparsed:!simple,reviewed:false,raw});
       }
       out.warnings.push(`ページ${pageNumber}: 2年生以上の抽出結果を確認してください`);
     } else out.warnings.push(`ページ${pageNumber}: 2年生以上の時間割は手入力してください`);

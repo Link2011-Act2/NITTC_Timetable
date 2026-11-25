@@ -13,6 +13,33 @@ test('generates a manifest and exact class assets from reviewed projects',async(
   assert.deepEqual(validateRelease(manifest,files,input.expectedClasses),[]);assert.deepEqual([...files.keys()],['1-1.sktjf.json','1-2.sktjf.json']);
   assert.equal(manifest.assets[0].url,'https://github.com/example/SKTJF/releases/download/2026.S.0/1-1.sktjf.json');assert.equal(files.get('1-1.sktjf.json').includes(Buffer.from('%PDF')),false);
 });
+test('adds a separate vacation manifest without changing the class manifest',async()=>{
+  const input=releaseInput();
+  const baseline=await assembleRelease(input);
+  const period={id:'2026-year_end',type:'year_end',name:'学年末休業',start:'2027-02-20',
+    end:null,confirmedThrough:'2027-03-31',estimatedEndMonth:4,reviewed:true,raw:'学年末休業',
+    sources:[{name:'calendar.pdf',url:null,sha256:'a'.repeat(64),page:1}]};
+  input.vacations={periods:[period]};
+  const {manifest,files}=await assembleRelease(input);
+  assert.deepEqual(manifest,baseline.manifest);
+  assert.deepEqual(validateRelease(manifest,files,input.expectedClasses),[]);
+  const asset=JSON.parse(files.get('vacations.json'));
+  assert.equal(asset.periods[0].end,null);
+  assert.equal(asset.periods[0].confirmedThrough,'2027-03-31');
+  assert.equal(asset.periods[0].raw,undefined);
+  files.set('vacations.json',Buffer.from('{}'));
+  assert.match(validateRelease(manifest,files).join('\n'),/SHA-256/);
+  period.reviewed=false;
+  await assert.rejects(assembleRelease(input),/未確認/);
+});
+
+test('rejects a reviewed vacation overlapping an A/B school day',async()=>{
+  const input=releaseInput();
+  const date=input.entries[0].project.calendar.find(cell=>cell.dayType==='A'||cell.dayType==='B').date;
+  input.vacations={periods:[{id:'2026-spring',type:'spring',name:'春季休業',start:date,end:date,confirmedThrough:date,
+    estimatedEndMonth:null,reviewed:true,sources:[{name:'calendar.pdf',url:null,sha256:'a'.repeat(64),page:1}]}]};
+  await assert.rejects(assembleRelease(input),/授業日が重なっています/);
+});
 test('rejects missing classes, unreviewed data and invalid release URLs',async()=>{
   let input=releaseInput();input.entries.pop();await assert.rejects(assembleRelease(input),/揃って/);
   input=releaseInput();input.entries[0].project.lessons[0].reviewed=false;await assert.rejects(assembleRelease(input),/未確認/);

@@ -1,5 +1,6 @@
 export const classIds = ['1-1','1-2','1-3','1-4', ...[2,3,4,5].flatMap(y => ['M','E','I','B'].map(c => `${y}${c}`))];
 export const validClassId = value => /^(1-[1-4]|[2-5][MEIB]|AC-[A-Z0-9]+)$/.test(value);
+export const isUndergraduateScope = scope => !scope.normalize('NFKC').trim().toUpperCase().startsWith('AC-');
 export function validWarningScope(value) {
   if(typeof value!=='string')return false;
   const normalized=value.normalize('NFKC').replace(/\s/g,'');
@@ -7,6 +8,43 @@ export function validWarningScope(value) {
 }
 export const emptyLesson = () => ({ id:crypto.randomUUID(), subject:'', teacher:'', room:'', cycle:'', attributes:'', excludedAttributes:'', remote:'', special:'' });
 export const emptyDay = date => ({ date, dayType:'', lessonDay:'', lessonType:'', label:'', reviewed:false, raw:'' });
+/** Week numbers have their own source and confirmation, separate from A/B dates. */
+export function putWeekDay(project, day) {
+  project.weekCalendar=(project.weekCalendar||[]).filter(item=>!(item.scope===day.scope&&item.date===day.date));
+  project.weekCalendar.push(day);
+}
+
+/** Group only lessons explicitly selected by the editor; adjacent periods are never inferred. */
+export function putWeekSeries(project, {term,classId,dayOfWeek,lessonIds,cycle,id=crypto.randomUUID()}) {
+  if(!['S','F'].includes(term)||!validClassId(classId)||!Number.isInteger(dayOfWeek)||dayOfWeek<1||dayOfWeek>5||
+      typeof id!=='string'||!/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(id)||
+      !Array.isArray(lessonIds)||!lessonIds.length||lessonIds.length>1000||new Set(lessonIds).size!==lessonIds.length||
+      !lessonIds.every(value=>typeof value==='string'&&/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(value))||!['WEEKLY','A','B'].includes(cycle))throw Error('授業を確認してください');
+  const entries=project.lessons.filter(cell=>cell.term===term&&cell.classId===classId&&cell.day===dayOfWeek)
+    .flatMap(cell=>cell.entries.map(entry=>({cell,entry}))).filter(item=>lessonIds.includes(item.entry.id));
+  if(entries.length!==lessonIds.length||!entries.some(({entry})=>entry.weekStart||entry.weekEnd))throw Error('実施週のある授業を選択してください');
+  if(entries.some(({entry})=>cycle!=='WEEKLY'&&entry.cycle&&entry.cycle!=='WEEKLY'&&entry.cycle!==cycle))throw Error('A/Bを確認してください');
+  if((project.weekSeries||[]).some(series=>series.term===term&&series.classId===classId&&series.id!==id&&series.lessonIds.some(value=>lessonIds.includes(value))))throw Error('選択した授業は別の授業機会に含まれています');
+  const sources=[];
+  for(const {cell} of entries){
+    if(!cell.sourceId||!Number.isInteger(cell.sourcePage)||cell.sourcePage<1||!project.sources.some(source=>source.id===cell.sourceId))throw Error('参照するPDFとページを確認してください');
+    if(!sources.some(source=>source.sourceId===cell.sourceId&&source.page===cell.sourcePage))sources.push({sourceId:cell.sourceId,page:cell.sourcePage});
+  }
+  const existing=(project.weekSeries||[]).find(item=>item.term===term&&item.classId===classId&&item.id===id);
+  const periods=[...new Set(entries.map(({cell})=>cell.period))].sort((a,b)=>a-b);
+  if(existing?.countingPolicy?.officialPeriodOverrides?.some(item=>!periods.includes(item.period)))throw Error('数え方に含まれる時限を残してください');
+  const series={term,classId,id,dayOfWeek,periods,lessonIds:[...lessonIds],cycle,sources,reviewed:false,
+    ...(existing?.countingPolicy!==undefined?{countingPolicy:structuredClone(existing.countingPolicy)}:{})};
+  project.weekSeries=(project.weekSeries||[]).filter(item=>!(item.term===term&&item.classId===classId&&item.id===id));
+  project.weekSeries.push(series);return series;
+}
+export function weekDayProblems(project, day, pageCounts = new Map()) {
+  const problems=[];
+  if(!/^[1-9][0-9]{0,2}$/.test(day.week||''))problems.push('授業週を確認してください');
+  if(!day.sourceId||!project.sources.some(source=>source.id===day.sourceId)||!Number.isInteger(day.sourcePage)||day.sourcePage<1||
+    (pageCounts.has(day.sourceId)&&day.sourcePage>pageCounts.get(day.sourceId)))problems.push('授業週の参照PDFとページを確認してください');
+  return problems;
+}
 // A save may finish after the user has made more edits. Only the exact saved snapshot is clean.
 export const matchesSavedSnapshot = (project, savedJson) => JSON.stringify(project) === savedJson;
 export const periodCount = project => project.lessons.reduce((max,c)=>Math.max(max,c.period),project.periodCount ?? 4);
@@ -15,10 +53,11 @@ export function emptyProject(pdf, pdfName, year, term) {
 }
 /** Open on an existing lesson and its source, or a calendar when no lessons exist. */
 export function initialProjectView(project, preferredClass) {
-  const sameTerm=project.lessons.filter(cell=>cell.term===project.term);
-  const lessons=sameTerm.length?sameTerm:project.lessons;
+  const supported=project.lessons.filter(cell=>classIds.includes(cell.classId));
+  const sameTerm=supported.filter(cell=>cell.term===project.term);
+  const lessons=sameTerm.length?sameTerm:supported;
   const first=lessons.find(cell=>cell.classId===preferredClass)||lessons[0];
-  const calendar=project.calendar[0];
+  const calendar=project.calendar.find(cell=>isUndergraduateScope(cell.scope));
   const source=first||calendar;
   return {view:first?'lesson':calendar?'calendar':'lesson',term:first?.term||project.term,
     classId:first?.classId||preferredClass,scope:calendar?.scope||'',
@@ -29,6 +68,13 @@ export function lessonAt(project, term, classId, day, period) {
   return project.lessons.find(c=>c.term===term && c.classId===classId && c.day===day && c.period===period);
 }
 export function putLesson(project, cell) {
+  const previous=lessonAt(project,cell.term,cell.classId,cell.day,cell.period);
+  const relevant=entry=>entry&&JSON.stringify([entry.id,entry.subject,entry.cycle,entry.attributes,entry.excludedAttributes,entry.weekStart,entry.weekEnd,entry.weekSourceNotation]);
+  for(const series of project.weekSeries||[]){
+    if(series.term!==cell.term||series.classId!==cell.classId||series.dayOfWeek!==cell.day)continue;
+    const changed=series.lessonIds.some(id=>relevant(previous?.entries.find(entry=>entry.id===id))!==relevant(cell.entries.find(entry=>entry.id===id)));
+    if(changed||(previous&&(previous.sourceId!==cell.sourceId||previous.sourcePage!==cell.sourcePage)&&cell.entries.some(entry=>series.lessonIds.includes(entry.id))))series.reviewed=false;
+  }
   project.lessons=project.lessons.filter(c=>!(c.term===cell.term && c.classId===cell.classId && c.day===cell.day && c.period===cell.period));
   project.lessons.push(cell);
 }
@@ -64,6 +110,8 @@ export function cellProblems(project, kind, cell, pageCounts = new Map()) {
     problems.push('参照ページを確認してください');
   if(kind==='lesson'){
     const entries=cell.entries||[],state=cell.state||(!entries.length?'EMPTY':'PRESENT');
+    if((project.weekSeries||[]).some(series=>series.term===cell.term&&series.classId===cell.classId&&series.dayOfWeek===cell.day&&
+      !series.reviewed&&series.lessonIds.some(id=>entries.some(entry=>entry.id===id))))problems.push('授業機会の関連付けを確認してください');
     if(cell.rawUnparsed)problems.push('科目・教員・教室を確認してください');
     if(!['PRESENT','EMPTY','EXCLUDED'].includes(state)||(state==='PRESENT')!==Boolean(entries.length)||(state==='EMPTY'&&cell.containsExcluded))
       problems.push('枠の内容を確認してください');
@@ -74,6 +122,9 @@ export function cellProblems(project, kind, cell, pageCounts = new Map()) {
       const subject=(entry.subject||'').trim(),cycle=(entry.cycle||'').trim().toUpperCase();
       const all=(entry.attributes||'').split(/[,，\s]+/).filter(Boolean),none=(entry.excludedAttributes||'').split(/[,，\s]+/).filter(Boolean);
       const special=(entry.special||'').trim().toUpperCase(),remote=entry.remote||'';
+      const first=entry.weekStart||'',last=entry.weekEnd||'';
+      if((first&&!/^[1-9][0-9]{0,2}$/.test(first))||(last&&!/^[1-9][0-9]{0,2}$/.test(last))||(first&&last&&Number(first)>Number(last)))
+        problems.push(`${label}実施週の範囲を確認してください`);
       if(!subject)problems.push(`${label}科目名を入力してください`);
       if(subject===(cell.raw||'').trim()&&/^[AB]\s*(?=[^\x00-\x7f])/u.test(subject))
         problems.push(`${label}A/Bと科目名を確認してください`);
@@ -89,39 +140,50 @@ export function cellProblems(project, kind, cell, pageCounts = new Map()) {
   }else if(kind==='calendar'){
     const type=(cell.dayType||'').trim().toUpperCase(),day=cell.lessonDay||'',override=cell.lessonType||'',label=(cell.label||'').trim();
     if(!['','A','B','HOLIDAY','休日','祝日'].includes(type)||(!type&&!label))problems.push('A/B・休日または行事を入力してください');
+    else if(!type&&!['MIDTERM','FINAL'].includes(cell.eventKind))problems.push('行事の日はA/Bまたは休日を選んでください');
     if((day&&!['1','2','3','4','5','6','7'].includes(day))||(override&&!['A','B'].includes(override))||(override&&!day))problems.push('振替先を確認してください');
     if(['HOLIDAY','休日','祝日'].includes(type)&&(day||override))problems.push('休日の振替先を確認してください');
     if(cell.eventKind&&!['MIDTERM','FINAL','EXCURSION','EVENT','EXAM_RETURN','OTHER'].includes(cell.eventKind))problems.push('行事の種類を確認してください');
     if(cell.eventKind&&!label)problems.push('行事名を入力してください');
+    if((cell.eventSourceId||cell.eventSourcePage)&&(!project.sources.some(source=>source.id===cell.eventSourceId)||
+      !Number.isInteger(cell.eventSourcePage)||cell.eventSourcePage<1||
+      (pageCounts.has(cell.eventSourceId)&&cell.eventSourcePage>pageCounts.get(cell.eventSourceId))))problems.push('行事の参照PDFとページを確認してください');
   }
   return problems;
 }
 
 export function reviewItems(project, pageCounts = new Map()) {
-  return [...project.lessons.map(c=>({kind:'lesson',c})),...project.calendar.map(c=>({kind:'calendar',c}))]
+  return [...project.lessons.filter(c=>classIds.includes(c.classId)).map(c=>({kind:'lesson',c})),
+    ...project.calendar.filter(c=>isUndergraduateScope(c.scope)).map(c=>({kind:'calendar',c}))]
     .filter(item=>!item.c.reviewed||cellProblems(project,item.kind,item.c,pageCounts).length);
+}
+
+export function isStandaloneDdLesson(cell) {
+  return Boolean(cell?.entries?.length) && cell.entries.every(entry =>
+    (entry.attributes || '').split(/[,，\s]+/).includes('DD'));
 }
 
 /** Prepare an explicit range without creating missing cells or confirming invalid ones. */
 export function planReviewRange(project, range, reviewed, pageCounts = new Map()) {
   if(typeof reviewed!=='boolean'||!range||!['lesson','calendar'].includes(range.kind))throw new Error('確認する範囲を指定してください');
-  const targets=[],stats={changed:0,unchanged:0,missing:0,problems:0};
+  const targets=[],stats={changed:0,unchanged:0,missing:0,problems:0,individual:0};
   const add=(cell,key,required=true)=>{
     if(!cell){if(required)stats.missing++;return;}
     if(reviewed&&cellProblems(project,range.kind,cell,pageCounts).length){stats.problems++;return;}
     if(cell.reviewed===reviewed){stats.unchanged++;return;}
+    if(reviewed&&range.kind==='lesson'&&isStandaloneDdLesson(cell)){stats.individual++;return;}
     targets.push(key);stats.changed++;
   };
   if(range.kind==='lesson'){
     const {term,classId,firstDay,lastDay,firstPeriod,lastPeriod}=range;
-    if(!['S','F'].includes(term)||!validClassId(classId)||![firstDay,lastDay,firstPeriod,lastPeriod].every(Number.isInteger)||
+    if(!['S','F'].includes(term)||!classIds.includes(classId)||![firstDay,lastDay,firstPeriod,lastPeriod].every(Number.isInteger)||
       firstDay<1||lastDay>5||firstDay>lastDay||firstPeriod<1||lastPeriod>periodCount(project)||firstPeriod>lastPeriod)
       throw new Error('曜日と時限の範囲を確認してください');
     for(let period=firstPeriod;period<=lastPeriod;period++)for(let day=firstDay;day<=lastDay;day++)
       add(lessonAt(project,term,classId,day,period),{term,classId,day,period});
   }else{
     const {scope,start,end}=range,validDate=value=>typeof value==='string'&&/^\d{4}-\d{2}-\d{2}$/.test(value)&&isoDate(...value.split('-').map(Number))===value;
-    if(typeof scope!=='string'||!scope.trim()||!validDate(start)||!validDate(end)||start>end||start<`${project.year}-04-01`||end>`${project.year+1}-03-31`)
+    if(typeof scope!=='string'||!scope.trim()||!isUndergraduateScope(scope)||!validDate(start)||!validDate(end)||start>end||start<`${project.year}-04-01`||end>`${project.year+1}-03-31`)
       throw new Error('年度内の日付の範囲を確認してください');
     const days=new Map(project.calendar.filter(c=>c.scope===scope).map(c=>[c.date,c]));
     for(let date=start;date<=end;date=dateAdd(date,1)){
@@ -256,6 +318,38 @@ export function validProject(p) {
     (w.scope===undefined||validWarningScope(w.scope))&&
     ['classIds','excludedClassIds'].every(key=>w[key]===undefined||(Array.isArray(w[key])&&w[key].length>0&&w[key].every(validClassId)&&new Set(w[key]).size===w[key].length)))))return false;
   const validSource=c=>(!c.sourceId||sourceIds.has(c.sourceId)) && (c.sourcePage==null||(Number.isInteger(c.sourcePage)&&c.sourcePage>0));
+  const weekDates=new Set();
+  if(p.weekCalendar!==undefined&&(!Array.isArray(p.weekCalendar)||!p.weekCalendar.every(c=>{
+    if(!c||typeof c.scope!=='string'||!validWarningScope(c.scope)||typeof c.date!=='string'||!/^\d{4}-\d{2}-\d{2}$/.test(c.date)||isoDate(...c.date.split('-').map(Number))!==c.date||!validSource(c)||typeof c.week!=='string'||typeof c.reviewed!=='boolean')return false;
+    const key=JSON.stringify([c.scope,c.date]);if(weekDates.has(key))return false;weekDates.add(key);return true;
+  })))return false;
+  const seriesKeys=new Set();
+  const validPolicy=(policy,periods)=>{
+    const keys=['regularDayCounts','holidayCounts','eventCounts','ordinaryPeriodCounts','officialPeriodOverrides','confirmedNonTeachingDates','sources'];
+    if(!policy||typeof policy!=='object'||Array.isArray(policy)||Object.keys(policy).length!==keys.length||keys.some(key=>!Object.hasOwn(policy,key)))return false;
+    const bool=value=>value===null||typeof value==='boolean';
+    const date=value=>typeof value==='string'&&/^\d{4}-\d{2}-\d{2}$/.test(value)&&isoDate(...value.split('-').map(Number))===value;
+    if(!bool(policy.regularDayCounts)||!bool(policy.holidayCounts)||!bool(policy.ordinaryPeriodCounts)||!policy.eventCounts||typeof policy.eventCounts!=='object'||Array.isArray(policy.eventCounts)||
+      !Object.entries(policy.eventCounts).every(([key,value])=>['MIDTERM','FINAL','EXCURSION','EVENT','EXAM_RETURN','OTHER'].includes(key)&&bool(value))||
+      !Array.isArray(policy.officialPeriodOverrides)||policy.officialPeriodOverrides.length>4440||
+      !Array.isArray(policy.confirmedNonTeachingDates)||policy.confirmedNonTeachingDates.length>370||new Set(policy.confirmedNonTeachingDates).size!==policy.confirmedNonTeachingDates.length||!policy.confirmedNonTeachingDates.every(date)||
+      !Array.isArray(policy.sources)||!policy.sources.length||policy.sources.length>128||!policy.sources.every(source=>source&&sourceIds.has(source.sourceId)&&Number.isInteger(source.page)&&source.page>0&&(source.note===undefined||typeof source.note==='string')))return false;
+    const overrides=new Set();return policy.officialPeriodOverrides.every(item=>{
+      if(!item||typeof item!=='object'||Array.isArray(item)||Object.keys(item).length!==3||!date(item.date)||!periods.includes(item.period)||!bool(item.counts))return false;
+      const key=`${item.date}/${item.period}`;if(overrides.has(key))return false;overrides.add(key);return true;
+    });
+  };
+  if(p.weekSeries!==undefined&&(!Array.isArray(p.weekSeries)||!p.weekSeries.every(item=>{
+    if(!item||!['S','F'].includes(item.term)||!validClassId(item.classId)||typeof item.id!=='string'||
+      !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(item.id)||!Number.isInteger(item.dayOfWeek)||item.dayOfWeek<1||item.dayOfWeek>7||
+      !Array.isArray(item.periods)||!item.periods.length||item.periods.length>12||new Set(item.periods).size!==item.periods.length||
+      !item.periods.every(period=>Number.isInteger(period)&&period>=1&&period<=12)||!Array.isArray(item.lessonIds)||!item.lessonIds.length||item.lessonIds.length>1000||
+      new Set(item.lessonIds).size!==item.lessonIds.length||!item.lessonIds.every(id=>typeof id==='string'&&/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(id))||
+      !['WEEKLY','A','B'].includes(item.cycle)||typeof item.reviewed!=='boolean'||!Array.isArray(item.sources)||!item.sources.length||item.sources.length>128||
+      !item.sources.every(source=>source&&sourceIds.has(source.sourceId)&&Number.isInteger(source.page)&&source.page>0&&(source.note===undefined||typeof source.note==='string'))||
+      (item.countingPolicy!==undefined&&!validPolicy(item.countingPolicy,item.periods)))return false;
+    const key=JSON.stringify([item.term,item.classId,item.id]);if(seriesKeys.has(key))return false;seriesKeys.add(key);return true;
+  })))return false;
   const seen=new Set();
   if(!p.lessons.every(c=>{if(!c||typeof c!=='object')return false;const k=JSON.stringify([c.term,c.classId,c.day,c.period]);if(seen.has(k))return false;seen.add(k);return validSource(c)&&(c.state===undefined||['PRESENT','EMPTY','EXCLUDED'].includes(c.state))&&(c.containsExcluded===undefined||typeof c.containsExcluded==='boolean')&&(c.rawUnparsed===undefined||typeof c.rawUnparsed==='boolean')&&['S','F'].includes(c.term)&&typeof c.classId==='string'&&Number.isInteger(c.day)&&c.day>=1&&c.day<=5&&Number.isInteger(c.period)&&c.period>=1&&c.period<=12&&Array.isArray(c.entries)&&c.entries.every(e=>e&&typeof e==='object'&&!Array.isArray(e)&&Object.values(e).every(v=>typeof v==='string'))&&typeof c.reviewed==='boolean';}))return false;
   const dates=new Set();return p.calendar.every(c=>{if(!c||!validSource(c)||typeof c.scope!=='string'||typeof c.date!=='string'||!/^\d{4}-\d{2}-\d{2}$/.test(c.date))return false;const [year,month,day]=c.date.split('-').map(Number);if(isoDate(year,month,day)!==c.date)return false;const k=JSON.stringify([c.scope,c.date]);if(dates.has(k))return false;dates.add(k);return typeof c.reviewed==='boolean' && ['dayType','lessonDay','lessonType','label','raw'].every(k=>typeof c[k]==='string');});

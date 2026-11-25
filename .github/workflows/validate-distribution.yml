@@ -22,12 +22,12 @@ jobs:
         with:
           name: ${{ inputs.artifact_name }}
           path: candidate
-      - name: Validate class assets
+      - name: Validate distribution assets
         env:
           EXPECTED_CLASSES: ${{ inputs.class_ids }}
         shell: bash
         run: |
-          if [[ ! "$EXPECTED_CLASSES" =~ ^(1-[1-4]|[2-5][MEIB]|AC-[A-Z0-9]+)(\ (1-[1-4]|[2-5][MEIB]|AC-[A-Z0-9]+))*$ ]]; then
+          if [[ ! "$EXPECTED_CLASSES" =~ ^(1-[1-4]|[2-5][MEIB])(\ (1-[1-4]|[2-5][MEIB]))*$ ]]; then
             echo 'Invalid class list' >&2
             exit 1
           fi

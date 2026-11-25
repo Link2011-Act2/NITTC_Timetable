@@ -4,6 +4,14 @@ import { buildDistribution, scopeApplies } from '../lib/export.js';
 import { emptyDay, emptyLesson } from '../web/table-model.js';
 import { validateSktjf } from '../lib/validator.js';
 import { fixture } from './support/synthetic.js';
+test('exports Beta revisions and keeps advanced classes outside the current distribution',async()=>{
+  const {project,options}=fixture();
+  const beta={...options,revision:'2026.S.2.Beta'};
+  assert.deepEqual(validateSktjf(await buildDistribution(project,beta)),[]);
+  await assert.rejects(buildDistribution(project,{...beta,revision:'2026.F.2.Beta'}),/リビジョン/);
+  await assert.rejects(buildDistribution(project,{...beta,revision:'2026.S.02.Beta'}),/リビジョン/);
+  await assert.rejects(buildDistribution(project,{...beta,classId:'AC-1M',scope:'AC-1M'}),/本科/);
+});
 test('exports only reviewed complete data and preserves excluded slots and stable ids',async()=>{const {project,options}=fixture();const result=await buildDistribution(project,options);assert.deepEqual(validateSktjf(result),[]);assert.equal(result.lessons[0].id,'stable-id');assert.deepEqual(result.lessons[0].conditions.all,['DD']);assert.equal(result.slotCoverage.find(x=>x.dayOfWeek===2).state,'EXCLUDED');assert.equal(result.calendar.length,5);assert.equal('data' in result.sources[0],false);});
 test('preserves the official source URL in the exported provenance',async()=>{const {project,options}=fixture();project.sources[0].url='https://example.edu/calendar.pdf';const data=await buildDistribution(project,options);assert.equal(data.sources[0].url,project.sources[0].url);project.sources[0].url='http://example.edu/calendar.pdf';await assert.rejects(buildDistribution(project,options));});
 test('missing or unreviewed records, missing provenance and tampered PDF block export',async()=>{for(const mutate of [p=>p.lessons[0].reviewed=false,p=>p.lessons.pop(),p=>p.calendar.pop(),p=>p.calendar[0].sourcePage=2,p=>p.sources[0].sha256='a'.repeat(64)]){const {project,options}=fixture();mutate(project);await assert.rejects(buildDistribution(project,options));}});
@@ -26,6 +34,15 @@ test('unparsed source text cannot be published even if a cell is marked reviewed
   const f=fixture();f.project.lessons[0].rawUnparsed=true;
   await assert.rejects(buildDistribution(f.project,f.options),/科目・教員・教室/);
 });
+test('week restrictions cannot be published as ordinary unrestricted subjects',async()=>{
+  for(const subject of ['卒研（9週〜）','工学実験・実習III (～10週)','数学II (5～10週)']){
+    const {project,options}=fixture();project.lessons[0].entries[0].subject=subject;
+    await assert.rejects(buildDistribution(project,options),/授業週/);
+  }
+  const {project,options}=fixture();
+  Object.assign(project.lessons[0].entries[0],{subject:'卒研',weekStart:'9',weekEnd:'',weekSourceNotation:'（9週〜）'});
+  await assert.rejects(buildDistribution(project,options),/実施週の配信/);
+});
 test('exports exclusions and explicit remote format while preserving old projects',async()=>{
   const f=fixture(),entry=f.project.lessons[0].entries[0];
   entry.excludedAttributes='INTERNATIONAL';entry.remote='yes';
@@ -46,6 +63,27 @@ test('older entries with omitted optional fields export without crashing',async(
   await assert.rejects(buildDistribution(f.project,f.options),/授業の内容/);
 });
 test('calendar grouping maps only intended classes',()=>{assert.equal(scopeApplies('１・２・３年生','3I'),true);assert.equal(scopeApplies('4ME','4I'),false);assert.equal(scopeApplies('4ME','4E'),true);assert.equal(scopeApplies('4・5年生','5B'),true);});
+test('standalone events require an explicit day type while exam labels retain their existing behavior',async()=>{
+  const {project,options}=fixture();
+  const day=project.calendar[0];
+  Object.assign(day,{dayType:'',label:'校内行事',eventKind:'EVENT'});
+  await assert.rejects(buildDistribution(project,options),/A\/Bまたは休日/);
+  day.dayType='HOLIDAY';
+  assert.deepEqual((await buildDistribution(project,options)).calendar[0].event,{name:'校内行事',kind:'EVENT'});
+  Object.assign(day,{dayType:'',label:'中間試験',eventKind:'MIDTERM'});
+  const exam=(await buildDistribution(project,options)).calendar[0];
+  assert.equal(exam.dayType,null);
+  assert.equal(exam.event.kind,'MIDTERM');
+  day.dayType='B';day.eventSourceId='src';day.eventSourcePage=1;
+  const examWithCycle=(await buildDistribution(project,options)).calendar[0];
+  assert.equal(examWithCycle.dayType,'B');assert.equal(examWithCycle.event.kind,'MIDTERM');
+  assert.deepEqual(examWithCycle.sources,[{sourceId:'src',page:1}]);
+  project.sources.push({...project.sources[0],id:'exam-source'});day.eventSourceId='exam-source';
+  const separateSource=(await buildDistribution(project,options)).calendar[0];
+  assert.deepEqual(separateSource.sources,[{sourceId:'src',page:1},{sourceId:'exam-source',page:1}]);
+  day.eventSourcePage=2;
+  await assert.rejects(buildDistribution(project,options),/行事|ページ/);
+});
 test('entered weekend dates are reviewed and exported without requiring empty weekends',async()=>{
   const {project,options}=fixture();options.end='2026-04-12';
   assert.equal((await buildDistribution(project,options)).calendar.length,5);
