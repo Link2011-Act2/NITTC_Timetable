@@ -3,6 +3,7 @@ import {basename,dirname,relative,resolve,isAbsolute,sep} from 'node:path';
 import {readReleaseDirectory} from '../lib/release-io.js';
 import {validateRelease} from '../lib/release.js';
 import {validateReleaseV2} from '../lib/release-v2.js';
+import {validateReleaseV3} from '../lib/release-v3.js';
 
 if(process.argv.length<6){console.error('Usage: node bin/finalize-manifest.mjs CANDIDATE_DIRECTORY PUBLISHED_AT NEW_FILE CLASS...');process.exitCode=2;}
 else try{
@@ -12,7 +13,7 @@ else try{
   if(!inside||(!isAbsolute(inside)&&inside!=='..'&&!inside.startsWith(`..${sep}`)))throw new Error('候補とは別の場所を指定してください');
   const classes=process.argv.slice(5),{manifest,files}=await readReleaseDirectory(candidate);
   if(manifest.publishedAt!==null)throw new Error('公開日時が設定済みです');
-  const validate=manifest.dataFormatVersion===2?validateReleaseV2:validateRelease;
+  const validate=manifest.dataFormatVersion===3?validateReleaseV3:manifest.dataFormatVersion===2?validateReleaseV2:validateRelease;
   const before=validate(manifest,files,classes);
   if(before.length)throw new Error(before.join('\n'));
   const result={...manifest,publishedAt},after=validate(result,files,classes,true);

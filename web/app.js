@@ -1,9 +1,10 @@
 import * as pdfjs from '/node_modules/pdfjs-dist/build/pdf.mjs';
 import { isProjectShape } from './model.js';
-import { addSourcePreservingEdits, adjacentVisibleSlot, applyReviewPlan, captureHistory, cellProblems, classIds, dateAdd, emptyDay, emptyLesson, emptyProject, ensureEntryIds, exportConfigForTerm, setExportConfigForTerm, History, historyUnchanged, initialProjectView, isStandaloneDdLesson, isUndergraduateScope, lessonAt, matchesSavedSnapshot, migrateV1, migrateV2, missingCalendarRange, missingSlots, mondayOf, nextReviewItem, pasteTableCell, periodCount, placeLegacyEntry, planReviewRange, putLesson, putWeekDay, putWeekSeries, reviewItems, validProject, weekDayProblems } from './table-model.js';
+import { addSourcePreservingEdits, adjacentVisibleSlot, applyReviewPlan, captureHistory, cellProblems, classIds, dateAdd, emptyDay, emptyLesson, emptyProject, ensureEntryIds, exportConfigForTerm, setExportConfigForTerm, History, historyUnchanged, initialProjectView, isStandaloneDdLesson, isUndergraduateScope, lessonAt, matchesSavedSnapshot, migrateV1, migrateV2, missingCalendarRange, missingSlots, mondayOf, nextReviewItem, pasteTableCell, periodCount, placeLegacyEntry, planReviewRange, putLesson, putSelectionGroup, putWeekDay, putWeekSeries, reviewItems, validProject, weekDayProblems } from './table-model.js';
 import { extractPage } from './extract.js';
 import { normalizeSubjectName } from './subject-names.js';
 import { parseWeekRange } from './week-ranges.js';
+import { attributeTokens, knownAttributes, setCustomAttributes, toggleAttribute } from './attribute-selection.js';
 pdfjs.GlobalWorkerOptions.workerSrc='/node_modules/pdfjs-dist/build/pdf.worker.mjs';
 const $=id=>document.getElementById(id), weekday=['月','火','水','木','金','土','日'];
 let history=new History(emptyProject(null,'',2026,'S')), pdf=null, sourceId='', page=1, zoom=1, tableZoom=1, view='lesson', selection=null, dirty=false, renderToken=0, sourceRequest=0, saving=false;
@@ -12,17 +13,40 @@ const project=()=>history.current, say=t=>{$('status').textContent=t;};
 const to64=bytes=>{let s='';for(let i=0;i<bytes.length;i+=32768)s+=String.fromCharCode(...bytes.subarray(i,i+32768));return btoa(s);};
 const from64=s=>Uint8Array.from(atob(s),c=>c.charCodeAt(0));
 const sha256=async bytes=>Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',bytes)),x=>x.toString(16).padStart(2,'0')).join('');
-for(const value of classIds){const o=document.createElement('option');o.value=value;$('class-options').append(o);}
+function setSelectedClass(value){
+  if(!classIds.includes(value))throw Error('クラスを確認してください');
+  const year=value[0];$('class-year').value=year;
+  $('class-id').replaceChildren(...classIds.filter(id=>id[0]===year).map(id=>{
+    const option=document.createElement('option');option.value=id;option.textContent=year==='1'?`${id.slice(2)}組`:id.slice(1);return option;
+  }));
+  $('class-id').value=value;
+}
+setSelectedClass('1-1');
 let lastClassId=$('class-id').value;
+$('class-year').onchange=()=>{
+  const year=$('class-year').value,previous=$('class-id').value;
+  const suffix=previous[0]==='1'?previous.slice(2):previous.slice(1);
+  const desired=year==='1'?`${year}-${suffix}`:`${year}${suffix}`;
+  setSelectedClass(classIds.includes(desired)?desired:classIds.find(id=>id[0]===year));
+  $('class-id').dispatchEvent(new Event('change'));
+};
 for(let i=1;i<=12;i++){const label=document.createElement('label');label.className='field';label.dataset.period=i;label.textContent=`${i}時限の開始・終了`;const times=document.createElement('span');for(const part of ['start','end']){const input=document.createElement('input');input.type='time';input.id=`period-${i}-${part}`;input.setAttribute('aria-label',`${i}時限の${part==='start'?'開始':'終了'}`);times.append(input);}label.append(times);$('period-times').append(label);}
 const exportFields=['export-scope','export-start','export-end','export-revision',...Array.from({length:12},(_,i)=>[`period-${i+1}-start`,`period-${i+1}-end`]).flat()];
 for(const id of exportFields)$(id).oninput=()=>{const values=Object.fromEntries(exportFields.map(key=>[key,$(key).value]));values['coverage-confirmed']='false';history.change(p=>setExportConfigForTerm(p,$('term').value,values));$('coverage-confirmed').checked=false;dirty=true;updateControls();};
 $('coverage-confirmed').onchange=()=>{const checked=$('coverage-confirmed').checked;history.change(p=>setExportConfigForTerm(p,$('term').value,{...exportConfigForTerm(p,$('term').value),'coverage-confirmed':String(checked)}));dirty=true;updateControls();};
 function restoreExportConfig(config={}){for(const id of exportFields)$(id).value=config[id]??(id==='export-revision'?'0':'');$('coverage-confirmed').checked=false;}
 function invalidateCoverage(){if($('coverage-confirmed').checked){history.change(p=>{p.exportConfig={...p.exportConfig,'coverage-confirmed':'false'};});$('coverage-confirmed').checked=false;dirty=true;}}
-function change(fn, editor=true, resetReview=true){history.change(p=>{fn(p);if(p.exportConfig)p.exportConfig['coverage-confirmed']='false';});$('coverage-confirmed').checked=false;$('bulk-status').textContent='';dirty=true;renderTable();updateControls();if(editor)renderEditor();else{const box=$('editor').querySelector('.review');if(box&&resetReview)box.checked=false;const seriesBox=$('editor').querySelector('.series-review');if(seriesBox)seriesBox.checked=Boolean((project().weekSeries||[]).find(item=>item.term===$('term').value&&item.classId===$('class-id').value&&item.id===seriesBox.dataset.seriesId)?.reviewed);updateCellProblems();}}
+function change(fn, editor=true, resetReview=true){history.change(p=>{fn(p);if(p.exportConfig)p.exportConfig['coverage-confirmed']='false';});$('coverage-confirmed').checked=false;$('bulk-status').textContent='';dirty=true;renderTable();updateControls();if(editor)renderEditor();else{const box=$('editor').querySelector('.review');if(box&&resetReview)box.checked=false;const seriesBox=$('editor').querySelector('.series-review');if(seriesBox)seriesBox.checked=Boolean((project().weekSeries||[]).find(item=>item.term===$('term').value&&item.classId===$('class-id').value&&item.id===seriesBox.dataset.seriesId)?.reviewed);for(const check of $('editor').querySelectorAll('.selection-review'))check.checked=Boolean((project().selectionGroups||[]).find(group=>group.id===check.dataset.groupId)?.reviewed);updateCellProblems();const controls=$('editor').querySelector('.selection-controls');if(controls&&!controls.querySelector('details[open]')&&selection?.kind==='lesson'){controls.replaceChildren();const current=getLesson(selection.day,selection.period);if(current)selectionGroupControls(controls,current);}}}
 const visibleMissing=()=>missingSlots(project(),view,$('term').value,$('class-id').value,$('scope').value);
+function setScopeOptions(preferred=$('scope').value){
+  const available=[...new Set([...project().calendar,...(project().weekCalendar||[])]
+    .map(item=>item.scope).filter(scope=>scope&&isUndergraduateScope(scope)))];
+  if(!available.length)available.push('1・2・3年生');
+  $('scope').replaceChildren(...available.map(scope=>{const option=document.createElement('option');option.value=scope;option.textContent=scope;return option;}));
+  $('scope').value=available.includes(preferred)?preferred:available[0];
+}
 function updateControls(){
+  setScopeOptions();
   $('period-count').value=periodCount(project());for(const label of $('period-times').children)label.hidden=Number(label.dataset.period)>periodCount(project());
   const source=project().sources.find(s=>s.id===sourceId);$('pdf-name').textContent=source?.name||'PDFを追加してください';$('source').replaceChildren(...project().sources.map(s=>{const o=document.createElement('option');o.value=s.id;o.textContent=s.name;return o;}));$('source').value=sourceId;$('source').disabled=project().sources.length<2;$('year').disabled=project().sources.length>0;$('page-label').textContent=pdf?`${page} / ${pdf.numPages}`:'—';$('zoom-label').textContent=`${Math.round(zoom*100)}%`;
   $('prev').disabled=!pdf||page<=1;$('next').disabled=!pdf||page>=pdf.numPages;$('undo').disabled=!history.undoStack.length;$('redo').disabled=!history.redoStack.length;
@@ -35,9 +59,10 @@ function updateControls(){
   const calendar=project().calendar.filter(c=>isUndergraduateScope(c.scope));
   const pending=lessons.filter(c=>!c.reviewed).length+calendar.filter(c=>!c.reviewed).length;
   const pendingSeries=(project().weekSeries||[]).filter(item=>classIds.includes(item.classId)&&!item.reviewed).length;
+  const pendingSelections=(project().selectionGroups||[]).filter(item=>classIds.includes(item.classId)&&!item.reviewed).length;
   const problems=lessons.filter(c=>cellProblems(project(),'lesson',c,sourcePageCounts).length).length+calendar.filter(c=>cellProblems(project(),'calendar',c,sourcePageCounts).length).length;
   const missing=visibleMissing().length;
-  $('summary').textContent=`未確認 ${pending}件 · 要修正 ${problems}件 · 表示中の未入力 ${missing}件${pendingSeries?` · 授業機会 未確認 ${pendingSeries}件`:''}${project().legacyCells.length?` · 旧作業 ${project().legacyCells.length}件`:''}`;
+  $('summary').textContent=`未確認 ${pending}件 · 要修正 ${problems}件 · 表示中の未入力 ${missing}件${pendingSeries?` · 授業機会 未確認 ${pendingSeries}件`:''}${pendingSelections?` · 選択授業 未確認 ${pendingSelections}件`:''}${project().legacyCells.length?` · 旧作業 ${project().legacyCells.length}件`:''}`;
   $('next-issue').disabled=!reviewItems(project(),sourcePageCounts).length;$('next-missing').disabled=!missing;
   $('scopes').replaceChildren(...[...new Set(calendar.map(c=>c.scope))].map(scope=>{const option=document.createElement('option');option.value=scope;return option;}));
   const warnings=$('warnings');warnings.replaceChildren();for(const [index,warning] of (project().warnings||[]).entries()){if(warning.classIds&&!warning.classIds.some(id=>classIds.includes(id)))continue;const row=document.createElement('div');row.className='row';const text=document.createElement('span');text.textContent=warning.message;const resolve=document.createElement('button');resolve.textContent='確認済みにする';resolve.onclick=()=>change(p=>{p.warnings.splice(index,1);});row.append(text,resolve);warnings.append(row);}
@@ -92,6 +117,20 @@ function renderTable(){
 }
 function field(container,label,value,onChange){const wrap=document.createElement('label');wrap.className='field';wrap.textContent=label;const input=document.createElement('input');input.dataset.historyField=label;input.value=value||'';input.oninput=()=>onChange(input.value);wrap.append(input);container.append(wrap);}
 function choice(container,label,value,items,onChange){const wrap=document.createElement('label');wrap.className='field';wrap.textContent=label;const select=document.createElement('select');select.dataset.historyField=label;if(value&&!items.some(([v])=>v===value)){const option=document.createElement('option');option.value=value;option.textContent=`要確認: ${value}`;select.append(option);}for(const [v,name] of items){const option=document.createElement('option');option.value=v;option.textContent=name;select.append(option);}select.value=value||'';select.onchange=()=>onChange(select.value);wrap.append(select);container.append(wrap);}
+function attributeChoice(container,label,initial,current,onChange){
+  const group=document.createElement('fieldset');group.className='field';
+  const legend=document.createElement('legend');legend.textContent=label;group.append(legend);
+  for(const [id,name] of knownAttributes){
+    const row=document.createElement('label');row.className='row';const input=document.createElement('input');
+    input.type='checkbox';input.checked=attributeTokens(initial).includes(id);
+    input.onchange=()=>onChange(toggleAttribute(current(),id,input.checked));
+    row.append(input,document.createTextNode(name));group.append(row);
+  }
+  const known=new Set(knownAttributes.map(([id])=>id));
+  field(group,'その他の属性',attributeTokens(initial).filter(id=>!known.has(id)).join(', '),
+    value=>onChange(setCustomAttributes(current(),value)));
+  container.append(group);
+}
 function sourceControls(root,cell,save){
   const grid=document.createElement('div');grid.className='fields';
   choice(grid,'参照するPDF',cell.sourceId,[['','選択してください'],...project().sources.map(s=>[s.id,s.name])],v=>save('sourceId',v));
@@ -103,6 +142,34 @@ function sourceControls(root,cell,save){
     if(sourcePageCounts.has(current.sourceId)&&current.sourcePage>sourcePageCounts.get(current.sourceId)){say('参照ページを確認してください');return;}
     showSource(current.sourceId,current.sourcePage).then(shown=>{if(shown)say('');}).catch(error=>say(error.message||'PDFを表示できませんでした'));
   };root.append(show);
+}
+function selectionGroupControls(root,cell){
+  const groups=(project().selectionGroups||[]).filter(group=>group.term===cell.term&&group.classId===cell.classId&&group.day===cell.day&&group.period===cell.period);
+  if(cell.entries.filter(entry=>entry.subject?.trim()).length<2&&!groups.length)return;
+  const section=document.createElement('details'),heading=document.createElement('summary');
+  heading.textContent='選択授業';section.append(heading);
+  const help=document.createElement('p');help.textContent='選択して履修する授業を指定します。';section.append(help);
+  for(const group of [...groups,null]){
+    const box=document.createElement('fieldset'),legend=document.createElement('legend');
+    legend.textContent=group?'登録済みの選択授業':'新しい選択授業';box.append(legend);
+    const choices=cell.entries.filter(entry=>entry.subject?.trim()).map(entry=>{
+      const label=document.createElement('label');label.className='row';const input=document.createElement('input');input.type='checkbox';
+      input.checked=Boolean(group?.lessonIds.includes(entry.id));
+      label.append(input,document.createTextNode(`${entry.subject}${entry.cycle?` (${entry.cycle}週)`:''}`));box.append(label);return {id:entry.id,input};
+    });
+    const selected=()=>choices.filter(item=>item.input.checked).map(item=>item.id);
+    const save=document.createElement('button');save.type='button';save.textContent=group?'選択授業を変更':'選択授業を登録';
+    save.onclick=()=>{try{change(p=>putSelectionGroup(p,{term:cell.term,classId:cell.classId,day:cell.day,period:cell.period,lessonIds:selected(),...(group?{id:group.id}:{})}));say('');}catch(error){say(error.message||'授業を確認してください');}};
+    box.append(save);
+    if(group){
+      const label=document.createElement('label');label.className='row';const check=document.createElement('input');check.type='checkbox';check.className='selection-review';check.dataset.groupId=group.id;check.checked=group.reviewed;
+      check.onchange=()=>{try{change(p=>{if(check.checked){const updated=putSelectionGroup(p,{term:cell.term,classId:cell.classId,day:cell.day,period:cell.period,lessonIds:selected(),id:group.id});updated.reviewed=true;}else p.selectionGroups.find(item=>item.id===group.id).reviewed=false;});say('');}catch(error){check.checked=false;say(error.message||'授業を確認してください');}};
+      label.append(check,document.createTextNode('選択授業を確認済みにする'));box.append(label);
+      const remove=document.createElement('button');remove.type='button';remove.textContent='選択グループを解除';remove.onclick=()=>change(p=>{p.selectionGroups=p.selectionGroups.filter(item=>item.id!==group.id);});box.append(remove);
+    }
+    section.append(box);
+  }
+  root.append(section);
 }
 function seriesControls(root,cell){
   const rows=project().lessons.filter(item=>item.term===cell.term&&item.classId===cell.classId&&item.day===cell.day)
@@ -156,12 +223,12 @@ function renderEditor(){
     if(cell.raw){const raw=document.createElement('p');raw.className='extracted-text';raw.textContent=`抽出された文字: ${cell.raw}`;root.append(raw);}
     sourceControls(root,cell,(key,value)=>change(p=>{const c=structuredClone(getLesson(selection.day,selection.period)||cell);c[key]=value;c.reviewed=false;putLesson(p,c);},false));
     const set=(index,key,value)=>change(p=>{const c=structuredClone(getLesson(selection.day,selection.period)||cell);c.entries[index][key]=key==='subject'?normalizeSubjectName(value):value;if(key==='subject')c.rawUnparsed=false;c.state='PRESENT';c.reviewed=false;putLesson(p,c);},false);
-    cell.entries.forEach((entry,index)=>{const box=document.createElement('div');box.className='entry';box.dataset.historyEntry=entry.id||String(index);const h=document.createElement('h3');h.textContent=`授業 ${index+1}`;box.append(h);const grid=document.createElement('div');grid.className='fields';for(const [key,label] of [['subject','科目名'],['teacher','担当教員'],['room','教室'],['attributes','対象学生の属性'],['excludedAttributes','対象外の属性'],['weekStart','開始週'],['weekEnd','終了週']])field(grid,label,key==='subject'?normalizeSubjectName(entry[key]):entry[key],v=>set(index,key,v));choice(grid,'授業の週',entry.cycle,[['','毎週'],['A','A週'],['B','B週']],v=>set(index,'cycle',v));choice(grid,'授業形式',entry.remote,[['','指定なし'],['yes','遠隔'],['no','対面']],v=>set(index,'remote',v));choice(grid,'授業の種類',entry.special,[['','通常授業'],['MAKEUP','補講'],['EXTENSION','延長枠']],v=>set(index,'special',v));box.append(grid);const parsed=parseWeekRange(entry.subject);if(parsed&&!entry.weekStart&&!entry.weekEnd){const use=document.createElement('button');use.type='button';use.textContent='週数を取り込む';use.onclick=()=>change(p=>{const c=structuredClone(getLesson(selection.day,selection.period)||cell),e=c.entries[index];e.subject=parsed.subject;e.weekStart=String(parsed.activeWeekRange.start??'');e.weekEnd=String(parsed.activeWeekRange.end??'');e.weekSourceNotation=parsed.notation;c.reviewed=false;putLesson(p,c);});box.append(use);}if(entry.weekSourceNotation){const source=document.createElement('p');source.textContent=`週数の根拠: ${entry.weekSourceNotation}`;box.append(source);}if(cell.entries.length>1){const del=document.createElement('button');del.textContent='この授業を削除';del.onclick=()=>change(p=>{const c=structuredClone(getLesson(selection.day,selection.period)||cell);c.entries.splice(index,1);c.reviewed=false;putLesson(p,c);});box.append(del);}root.append(box);});
+    cell.entries.forEach((entry,index)=>{const box=document.createElement('div');box.className='entry';box.dataset.historyEntry=entry.id||String(index);const h=document.createElement('h3');h.textContent=`授業 ${index+1}`;box.append(h);const grid=document.createElement('div');grid.className='fields';for(const [key,label] of [['subject','科目名'],['teacher','担当教員'],['room','教室'],['weekStart','開始週'],['weekEnd','終了週']])field(grid,label,key==='subject'?normalizeSubjectName(entry[key]):entry[key],v=>set(index,key,v));for(const [key,label] of [['attributes','対象の属性'],['excludedAttributes','対象外の属性']])attributeChoice(grid,label,entry[key],()=>((getLesson(selection.day,selection.period)||cell).entries[index]?.[key]||''),v=>set(index,key,v));choice(grid,'授業の週',entry.cycle,[['','毎週'],['A','A週'],['B','B週']],v=>set(index,'cycle',v));choice(grid,'授業形式',entry.remote,[['','指定なし'],['yes','遠隔'],['no','対面']],v=>set(index,'remote',v));choice(grid,'授業の種類',entry.special,[['','通常授業'],['MAKEUP','補講'],['EXTENSION','延長枠']],v=>set(index,'special',v));box.append(grid);const parsed=parseWeekRange(entry.subject);if(parsed&&!entry.weekStart&&!entry.weekEnd){const use=document.createElement('button');use.type='button';use.textContent='週数を取り込む';use.onclick=()=>change(p=>{const c=structuredClone(getLesson(selection.day,selection.period)||cell),e=c.entries[index];e.subject=parsed.subject;e.weekStart=String(parsed.activeWeekRange.start??'');e.weekEnd=String(parsed.activeWeekRange.end??'');e.weekSourceNotation=parsed.notation;c.reviewed=false;putLesson(p,c);});box.append(use);}if(entry.weekSourceNotation){const source=document.createElement('p');source.textContent=`週数の根拠: ${entry.weekSourceNotation}`;box.append(source);}if(cell.entries.length>1){const del=document.createElement('button');del.textContent='この授業を削除';del.onclick=()=>change(p=>{const c=structuredClone(getLesson(selection.day,selection.period)||cell);c.entries.splice(index,1);c.reviewed=false;putLesson(p,c);});box.append(del);}root.append(box);});
     const add=document.createElement('button');add.textContent='授業を追加';add.onclick=()=>change(p=>{const c=structuredClone(getLesson(selection.day,selection.period)||cell);c.entries.push(emptyLesson());c.state='PRESENT';c.reviewed=false;putLesson(p,c);});root.append(add);
     const del=document.createElement('button');del.textContent='この枠を空欄にする';del.onclick=()=>change(p=>putLesson(p,{...(getLesson(selection.day,selection.period)||cell),entries:[],state:'EMPTY',containsExcluded:false,rawUnparsed:false,reviewed:false}));root.append(del);
     const exclude=document.createElement('button');exclude.textContent='配信対象外にする';exclude.onclick=()=>change(p=>putLesson(p,{...(getLesson(selection.day,selection.period)||cell),entries:[],state:'EXCLUDED',containsExcluded:false,rawUnparsed:false,reviewed:false}));root.append(exclude);
     if(cell.entries.length){const label=document.createElement('label');label.className='row';const check=document.createElement('input');check.type='checkbox';check.checked=Boolean(cell.containsExcluded);check.onchange=()=>change(p=>{const c=structuredClone(getLesson(selection.day,selection.period)||cell);c.containsExcluded=check.checked;c.reviewed=false;putLesson(p,c);});label.append(check,document.createTextNode('この枠に配信対象外の授業もある'));root.append(label);}
-    seriesControls(root,cell);
+    seriesControls(root,cell);const selectionControls=document.createElement('div');selectionControls.className='selection-controls';selectionGroupControls(selectionControls,cell);root.append(selectionControls);
     reviewControl(root,saved?.reviewed||false,checked=>change(p=>{const c=structuredClone(getLesson(selection.day,selection.period)||cell);c.reviewed=checked;putLesson(p,c);}));
   }else{
     const saved=getDay(selection.date),cell=saved||{...emptyDay(selection.date),scope:$('scope').value,sourceId,sourcePage:page};sourceControls(root,cell,(key,value)=>change(p=>{const c=structuredClone(getDay(selection.date)||cell);c[key]=value;c.reviewed=false;p.calendar=p.calendar.filter(x=>!(x.scope===c.scope&&x.date===c.date));p.calendar.push(c);},false));const grid=document.createElement('div');grid.className='fields';
@@ -233,7 +300,7 @@ function moveHistory(action){
 }
 $('undo').onclick=()=>moveHistory('undo');$('redo').onclick=()=>moveHistory('redo');
 $('source').onchange=()=>showSource($('source').value).catch(e=>{updateControls();say(e.message);});
-$('next-issue').onclick=()=>{const current=selection&&(selection.kind==='lesson'?{...selection,term:$('term').value,classId:$('class-id').value}:{...selection,scope:$('scope').value});const item=nextReviewItem(project(),current,sourcePageCounts);if(!item)return;invalidateCoverage();if(item.kind==='lesson'){view='lesson';$('term').value=item.c.term;restoreExportConfig(exportConfigForTerm(project(),item.c.term));$('class-id').value=item.c.classId;lastClassId=item.c.classId;selection={kind:'lesson',day:item.c.day,period:item.c.period};}else{view='calendar';$('scope').value=item.c.scope;selection={kind:'calendar',date:item.c.date};}refresh();showSelectedEditor();document.querySelector('.slot.selected')?.scrollIntoView({block:'nearest'});};
+$('next-issue').onclick=()=>{const current=selection&&(selection.kind==='lesson'?{...selection,term:$('term').value,classId:$('class-id').value}:{...selection,scope:$('scope').value});const item=nextReviewItem(project(),current,sourcePageCounts);if(!item)return;invalidateCoverage();if(item.kind==='lesson'){view='lesson';$('term').value=item.c.term;restoreExportConfig(exportConfigForTerm(project(),item.c.term));setSelectedClass(item.c.classId);lastClassId=item.c.classId;selection={kind:'lesson',day:item.c.day,period:item.c.period};}else{view='calendar';setScopeOptions(item.c.scope);selection={kind:'calendar',date:item.c.date};}refresh();showSelectedEditor();document.querySelector('.slot.selected')?.scrollIntoView({block:'nearest'});};
 $('next-missing').onclick=()=>{const missing=visibleMissing();if(!missing.length)return;const index=missing.findIndex(sameSelection);selection=missing[(index+1)%missing.length];refresh();showSelectedEditor();document.querySelector('.slot.selected')?.scrollIntoView({block:'nearest'});};
 function canReplace(){return !dirty||confirm('保存していない変更があります。別のファイルを開きますか？');}
 $('pdf-input').onchange=async e=>{
@@ -256,7 +323,7 @@ $('pdf-input').onchange=async e=>{
     if(request===sourceRequest){
       pdf=doc;sourceId=source.id;page=1;selection=null;
       if($('term').value===termAtStart){$('term').value=term;restoreExportConfig(exportConfigForTerm(project(),term));}
-      if(calendar.length){view='calendar';$('scope').value=calendar[0].scope;}else view='lesson';
+      if(calendar.length){view='calendar';setScopeOptions(calendar[0].scope);}else view='lesson';
       refresh();await renderPdf();
     }else{await doc.destroy().catch(()=>{});refresh();}
     if(history===activeHistory)say(warnings.join('\n')||'抽出した内容を確認してください');
@@ -273,9 +340,9 @@ $('project-input').onchange=async e=>{
     if(!historyUnchanged(history,captured))throw Error('読み込み中に変更されました。保存してからもう一度開いてください');
     const request=++sourceRequest;renderToken++;history=new History(next);sourcePageCounts=new Map(next.sources.map((source,index)=>[source.id,docs[index].numPages]));const loadedHistory=history;committed=true;
     const initial=initialProjectView(next,$('class-id').value),sourceIndex=next.sources.findIndex(source=>source.id===initial.sourceId);
-    pdf=docs[sourceIndex];sourceId=initial.sourceId;page=initial.page<=pdf.numPages?initial.page:1;view=initial.view;dirty=migrated;selection=null;$('year').value=next.year;$('term').value=initial.term;$('class-id').value=initial.classId;lastClassId=initial.classId;
+    pdf=docs[sourceIndex];sourceId=initial.sourceId;page=initial.page<=pdf.numPages?initial.page:1;view=initial.view;dirty=migrated;selection=null;$('year').value=next.year;$('term').value=initial.term;setSelectedClass(initial.classId);lastClassId=initial.classId;
     const config=exportConfigForTerm(next,initial.term);restoreExportConfig(config);$('bulk-start').value=config['export-start']||'';$('bulk-end').value=config['export-end']||'';$('bulk-status').textContent='';
-    if(initial.scope){$('scope').value=initial.scope;if(!$('export-scope').value)$('export-scope').value=initial.scope;}
+    if(initial.scope){setScopeOptions(initial.scope);if(!$('export-scope').value)$('export-scope').value=initial.scope;}
     refresh();docs.forEach((doc,index)=>{if(index!==sourceIndex)doc.destroy().catch(()=>{});});await renderPdf();if(history===loadedHistory&&sourceRequest===request)say('作業を開きました');
   }catch(error){if(!committed)for(const doc of docs)await doc.destroy().catch(()=>{});say(committed?'作業を開きましたが、PDFを表示できませんでした':`作業ファイルを開けませんでした: ${error.message}`);}
 };

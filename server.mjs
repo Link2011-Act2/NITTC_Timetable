@@ -3,6 +3,8 @@ import { readFile } from 'node:fs/promises';
 import { dirname, extname, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { buildDistribution } from './lib/export.js';
+import { buildDistributionV2 } from './lib/export-v2.js';
+import { buildDistributionV3 } from './lib/export-v3.js';
 
 const root = dirname(fileURLToPath(import.meta.url));
 const mime = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.mjs': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.wasm': 'application/wasm' };
@@ -14,7 +16,7 @@ export function createAppServer() { const server=createServer(async (req, res) =
       if(req.headers.origin!==origin || !/^application\/json(?:\s*;|$)/i.test(req.headers['content-type']||''))throw new Error('origin');
       let size=0;const chunks=[];
       for await(const chunk of req){size+=chunk.length;if(size>20*1024*1024)throw new Error('too large');chunks.push(chunk);}
-      try{const {project,options}=JSON.parse(Buffer.concat(chunks).toString('utf8'));const data=await buildDistribution(project,options);res.writeHead(200,{'Content-Type':'application/json; charset=utf-8','Cache-Control':'no-store','X-Content-Type-Options':'nosniff'});res.end(JSON.stringify({data}));}
+      try{const {project,options}=JSON.parse(Buffer.concat(chunks).toString('utf8'));const groups=(project.selectionGroups||[]).some(group=>group.term===options.term&&group.classId===options.classId),timed=(project.weekSeries||[]).some(group=>group.term===options.term&&group.classId===options.classId)||project.lessons.some(cell=>cell.term===options.term&&cell.classId===options.classId&&cell.entries.some(entry=>entry.weekStart||entry.weekEnd||entry.weekSourceNotation));const weeks=(project.weekCalendar||[]).filter(day=>day.scope===options.scope).map(day=>({...day,week:Number(day.week)}));const data=groups?await buildDistributionV3(project,options,weeks):timed?await buildDistributionV2(project,options,weeks):await buildDistribution(project,options);res.writeHead(200,{'Content-Type':'application/json; charset=utf-8','Cache-Control':'no-store','X-Content-Type-Options':'nosniff'});res.end(JSON.stringify({data}));}
       catch(error){res.writeHead(400,{'Content-Type':'application/json; charset=utf-8','Cache-Control':'no-store'});res.end(JSON.stringify({error:error.message}));}
       return;
     }

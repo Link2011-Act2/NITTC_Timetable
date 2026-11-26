@@ -14,6 +14,27 @@ export function putWeekDay(project, day) {
   project.weekCalendar.push(day);
 }
 
+/** Selection groups are explicitly reviewed, never inferred from a shared slot. */
+export function putSelectionGroup(project, {term,classId,day,period,lessonIds,id=crypto.randomUUID()}) {
+  if(!['S','F'].includes(term)||!classIds.includes(classId)||!Number.isInteger(day)||day<1||day>5||
+      !Number.isInteger(period)||period<1||period>12||typeof id!=='string'||
+      !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(id)||!Array.isArray(lessonIds)||lessonIds.length<2||
+      new Set(lessonIds).size!==lessonIds.length)throw Error('選択授業を確認してください');
+  const cell=lessonAt(project,term,classId,day,period);
+  const entries=lessonIds.map(lessonId=>cell?.entries.find(entry=>entry.id===lessonId));
+  if(entries.some(entry=>!entry||!entry.subject?.trim())||
+      new Set(entries.map(entry=>(entry.cycle||'WEEKLY').toUpperCase())).size!==1)
+    throw Error('同じ週の授業を選択してください');
+  if(!cell.sourceId||!Number.isInteger(cell.sourcePage)||cell.sourcePage<1||
+      !project.sources.some(source=>source.id===cell.sourceId))throw Error('参照するPDFとページを確認してください');
+  if((project.selectionGroups||[]).some(group=>group.id!==id&&group.lessonIds.some(lessonId=>lessonIds.includes(lessonId))))
+    throw Error('選択した授業は別のグループに含まれています');
+  const group={id,term,classId,day,period,lessonIds:[...lessonIds],
+    sources:[{sourceId:cell.sourceId,page:cell.sourcePage}],reviewed:false};
+  project.selectionGroups=(project.selectionGroups||[]).filter(item=>item.id!==id);
+  project.selectionGroups.push(group);return group;
+}
+
 /** Group only lessons explicitly selected by the editor; adjacent periods are never inferred. */
 export function putWeekSeries(project, {term,classId,dayOfWeek,lessonIds,cycle,id=crypto.randomUUID()}) {
   if(!['S','F'].includes(term)||!validClassId(classId)||!Number.isInteger(dayOfWeek)||dayOfWeek<1||dayOfWeek>5||
@@ -70,6 +91,11 @@ export function lessonAt(project, term, classId, day, period) {
 export function putLesson(project, cell) {
   const previous=lessonAt(project,cell.term,cell.classId,cell.day,cell.period);
   const relevant=entry=>entry&&JSON.stringify([entry.id,entry.subject,entry.cycle,entry.attributes,entry.excludedAttributes,entry.weekStart,entry.weekEnd,entry.weekSourceNotation]);
+  for(const group of project.selectionGroups||[]){
+    if(group.term!==cell.term||group.classId!==cell.classId||group.day!==cell.day||group.period!==cell.period)continue;
+    if(group.lessonIds.some(id=>relevant(previous?.entries.find(entry=>entry.id===id))!==relevant(cell.entries.find(entry=>entry.id===id)))||
+        (previous&&(previous.sourceId!==cell.sourceId||previous.sourcePage!==cell.sourcePage)))group.reviewed=false;
+  }
   for(const series of project.weekSeries||[]){
     if(series.term!==cell.term||series.classId!==cell.classId||series.dayOfWeek!==cell.day)continue;
     const changed=series.lessonIds.some(id=>relevant(previous?.entries.find(entry=>entry.id===id))!==relevant(cell.entries.find(entry=>entry.id===id)));
@@ -349,6 +375,18 @@ export function validProject(p) {
       !item.sources.every(source=>source&&sourceIds.has(source.sourceId)&&Number.isInteger(source.page)&&source.page>0&&(source.note===undefined||typeof source.note==='string'))||
       (item.countingPolicy!==undefined&&!validPolicy(item.countingPolicy,item.periods)))return false;
     const key=JSON.stringify([item.term,item.classId,item.id]);if(seriesKeys.has(key))return false;seriesKeys.add(key);return true;
+  })))return false;
+  const groupIds=new Set(),groupLessons=new Set();
+  if(p.selectionGroups!==undefined&&(!Array.isArray(p.selectionGroups)||!p.selectionGroups.every(group=>{
+    if(!group||!['S','F'].includes(group.term)||!classIds.includes(group.classId)||typeof group.id!=='string'||
+      !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(group.id)||groupIds.has(group.id)||
+      !Number.isInteger(group.day)||group.day<1||group.day>5||!Number.isInteger(group.period)||group.period<1||group.period>12||
+      !Array.isArray(group.lessonIds)||group.lessonIds.length<2||group.lessonIds.length>1000||
+      new Set(group.lessonIds).size!==group.lessonIds.length||!group.lessonIds.every(id=>typeof id==='string'&&
+        /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(id)&&!groupLessons.has(id))||
+      typeof group.reviewed!=='boolean'||!Array.isArray(group.sources)||!group.sources.length||
+      !group.sources.every(source=>source&&sourceIds.has(source.sourceId)&&Number.isInteger(source.page)&&source.page>0))return false;
+    groupIds.add(group.id);group.lessonIds.forEach(id=>groupLessons.add(id));return true;
   })))return false;
   const seen=new Set();
   if(!p.lessons.every(c=>{if(!c||typeof c!=='object')return false;const k=JSON.stringify([c.term,c.classId,c.day,c.period]);if(seen.has(k))return false;seen.add(k);return validSource(c)&&(c.state===undefined||['PRESENT','EMPTY','EXCLUDED'].includes(c.state))&&(c.containsExcluded===undefined||typeof c.containsExcluded==='boolean')&&(c.rawUnparsed===undefined||typeof c.rawUnparsed==='boolean')&&['S','F'].includes(c.term)&&typeof c.classId==='string'&&Number.isInteger(c.day)&&c.day>=1&&c.day<=5&&Number.isInteger(c.period)&&c.period>=1&&c.period<=12&&Array.isArray(c.entries)&&c.entries.every(e=>e&&typeof e==='object'&&!Array.isArray(e)&&Object.values(e).every(v=>typeof v==='string'))&&typeof c.reviewed==='boolean';}))return false;

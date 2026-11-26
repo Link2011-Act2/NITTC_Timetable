@@ -1,0 +1,111 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://link2011-act2.github.io/NITTC_Timetable/schema/manifest-v3.schema.json",
+  "title": "SKTJF release manifest for data format version 3",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "format",
+    "manifestVersion",
+    "schoolId",
+    "academicYear",
+    "term",
+    "revision",
+    "publishedAt",
+    "dataFormatVersion",
+    "classIds",
+    "assets"
+  ],
+  "properties": {
+    "format": {
+      "const": "SKTJF-MANIFEST"
+    },
+    "manifestVersion": {
+      "const": 1
+    },
+    "schoolId": {
+      "const": "nittc"
+    },
+    "academicYear": {
+      "type": "integer",
+      "minimum": 1900,
+      "maximum": 9998
+    },
+    "term": {
+      "enum": [
+        "S",
+        "F"
+      ]
+    },
+    "revision": {
+      "type": "string",
+      "pattern": "^[0-9]{4}\\.[SF]\\.(0|[1-9][0-9]{0,127})(\\.Beta)?$"
+    },
+    "publishedAt": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "format": "date-time",
+      "pattern": "Z$"
+    },
+    "dataFormatVersion": {
+      "const": 3
+    },
+    "classIds": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "pattern": "^(1-[1-4]|[2-5][MEIB]|AC-[A-Z0-9]+)$"
+      }
+    },
+    "assets": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/asset"
+      }
+    }
+  },
+  "$defs": {
+    "asset": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "classId",
+        "name",
+        "url",
+        "sha256",
+        "dataFormatVersion"
+      ],
+      "properties": {
+        "classId": {
+          "type": "string",
+          "pattern": "^(1-[1-4]|[2-5][MEIB]|AC-[A-Z0-9]+)$"
+        },
+        "name": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9-]+\\.sktjf\\.json$"
+        },
+        "url": {
+          "type": "string",
+          "format": "uri",
+          "pattern": "^https://github\\.com/"
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "dataFormatVersion": {
+          "enum": [
+            1,
+            2,
+            3
+          ]
+        }
+      }
+    }
+  }
+}
