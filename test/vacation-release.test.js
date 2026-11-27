@@ -7,11 +7,17 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import { createAppServer } from '../server.mjs';
+import { standaloneVacationBase } from '../lib/vacations.js';
 
 const cli = fileURLToPath(new URL('../bin/vacation-release.mjs', import.meta.url));
 const run = promisify(execFile);
 const repository = 'example/SKTJF';
 const source = {name:'synthetic-calendar.pdf', url:null, sha256:'a'.repeat(64), page:1};
+
+test('the standalone URL excludes malformed repository names and tags', () => {
+  assert.throws(() => standaloneVacationBase(repository + '\n', '2026.F.0.Beta'), /リポジトリ/);
+  assert.throws(() => standaloneVacationBase(repository, '2026.F.0.Beta\n'), /改訂番号/);
+});
 
 test('Web review validates each item before the CLI accepts a standalone release and its next-year correction', async t => {
   const server = createAppServer();
