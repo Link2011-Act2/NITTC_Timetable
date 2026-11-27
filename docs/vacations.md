@@ -4,7 +4,20 @@
 
 抽出結果の `periods` は、開始日候補と出典を持つ編集用の一覧です。日付欄と月の列を使って開始日を拾います。`periodEvidence` に矢印から得た終点候補と確認範囲の候補を記録し、`lessonStarts` に照合用の授業開始日候補を記録します。
 
-`node bin/review-vacations.mjs DRAFT.json NEW_REVIEW.json` で元PDFと照合しながら各候補を修正・確認できます。JSONを直接編集する場合、`confirmedThrough` に資料から休業と確認できる最終日を入力します。確定した終了日は `end` に入力し、終了日が未確定なら `end` を `null` にして必要に応じて `estimatedEndMonth` を指定します。日付と出典を確認した項目のみ `reviewed` を `true` にします。
+`npm start` で時間割エディターを開き、「長期休業の監修」から抽出したJSONを読み込みます。「PDFを開く」で資料を追加すると、SHA-256が一致する出典のページを表示できます。期間ごとに日付と出典を照合して承認し、監修ファイルを保存します。承認後に期間や出典を変更すると未承認に戻ります。
+
+CLIで確認する場合は `node bin/review-vacations.mjs DRAFT.json NEW_REVIEW.json` を使います。`confirmedThrough` は資料で休業と確認できた最終日です。確定した終了日は `end` に入力し、終了日が未確定なら `end` を `null` にして必要に応じて `estimatedEndMonth` を指定します。
+
+## 休業だけを配信する場合
+
+```sh
+node bin/vacation-release.mjs build 2027.S.0.Beta Link2011-Act2/NITTC_Timetable REVIEW.json NEW_DIRECTORY
+node bin/vacation-release.mjs validate 2027.S.0.Beta Link2011-Act2/NITTC_Timetable NEW_DIRECTORY
+```
+
+生成するアセットは `vacations.manifest.json` と `vacations.json` の2つです。配信許可後に、例ではタグ `vacations-2027.S.0.Beta` のGitHub Pre-releaseへ追加します。休業側の改訂番号を更新し、時間割Releaseのタグ・manifest・クラスファイルは従来の改訂番号で管理します。休業の同梱版から移行するときは、その年度で最後に休業を配信した学期・改訂番号より新しい番号を選びます。
+
+## 時間割に同梱する場合
 
 配信候補を作るときは build-release の設定に、確認済み下書きへの相対パス `vacationsPath` を指定します。既存の `manifest.json` とクラス別SKTJF v1は従来どおりです。追加の `vacations.manifest.json` が同じ改訂の `vacations.json` とそのSHA-256を指し、どちらも従来の配信候補検証の対象になります。クラス別日程のA/Bと確認済み休業期間が重なる場合は、資料を照合してください。
 

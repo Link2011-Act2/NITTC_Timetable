@@ -15,3 +15,7 @@
 .details-scroll{border-top:1px solid #dce5e1}
 #editor{margin-top:0;border-top:0;padding-top:0}
 @media(max-width:950px){.data-pane{height:90vh;min-height:600px}.data-scroll{overflow:hidden}}
+
+a.button{text-decoration:none}
+#entry h2{font-size:16px}
+#entry .entry .toolbar{margin-top:10px}

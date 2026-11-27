@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { buildDistribution } from './lib/export.js';
 import { buildDistributionV2 } from './lib/export-v2.js';
 import { buildDistributionV3 } from './lib/export-v3.js';
+import { reviewVacation } from './lib/vacations.js';
 
 const root = dirname(fileURLToPath(import.meta.url));
 const mime = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.mjs': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.wasm': 'application/wasm' };
@@ -12,6 +13,27 @@ export function createAppServer() { const server=createServer(async (req, res) =
   try {
     const host=`127.0.0.1:${server.address().port}`,origin=`http://${host}`;
     if (req.headers.host !== host) throw new Error('host');
+    if (req.method === 'POST' && req.url === '/api/review-vacation') {
+      if (req.headers.origin !== origin || !/^application\/json(?:\s*;|$)/i.test(req.headers['content-type'] || '')) throw new Error('origin');
+      let size = 0;
+      const chunks = [];
+      for await (const chunk of req) {
+        size += chunk.length;
+        if (size > 1024 * 1024) throw new Error('too large');
+        chunks.push(chunk);
+      }
+      res.setHeader('Content-Type', 'application/json; charset=utf-8');
+      res.setHeader('Cache-Control', 'no-store');
+      try {
+        const {draft, id} = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+        reviewVacation(draft, id);
+        res.end('{}');
+      } catch (error) {
+        res.statusCode = 400;
+        res.end(JSON.stringify({error: error.message}));
+      }
+      return;
+    }
     if (req.method === 'POST' && req.url === '/api/export') {
       if(req.headers.origin!==origin || !/^application\/json(?:\s*;|$)/i.test(req.headers['content-type']||''))throw new Error('origin');
       let size=0;const chunks=[];
